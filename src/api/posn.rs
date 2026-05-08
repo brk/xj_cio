@@ -55,7 +55,7 @@ fn seek_internal(
     Ok(new)
 }
 
-pub fn fseek(t: FILE_ptr, offset: libc::c_long, whence: libc::c_int) -> libc::c_int {
+pub fn fseek(t: FILE_ptr, offset: libc::c_long, whence: libc::c_int) -> core::ffi::c_int {
     let r = ops::with_token(t, |s| seek_internal(s, offset as i64, whence));
     match r {
         Some(Ok(_)) => 0,
@@ -67,7 +67,7 @@ pub fn fseek(t: FILE_ptr, offset: libc::c_long, whence: libc::c_int) -> libc::c_
     }
 }
 
-pub fn fseeko(t: FILE_ptr, offset: libc::off_t, whence: libc::c_int) -> libc::c_int {
+pub fn fseeko(t: FILE_ptr, offset: libc::off_t, whence: libc::c_int) -> core::ffi::c_int {
     let r = ops::with_token(t, |s| seek_internal(s, offset as i64, whence));
     match r {
         Some(Ok(_)) => 0,
@@ -123,7 +123,7 @@ pub fn rewind(t: FILE_ptr) {
 /// `fgetpos`/`fsetpos` stash the position inside the user's `fpos_t`.
 /// We store an `i64` byte offset (libc's `fpos_t` is opaque so callers
 /// can't tell the difference).
-pub fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> libc::c_int {
+pub fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;
@@ -141,7 +141,7 @@ pub fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> libc::c_int {
     0
 }
 
-pub fn fsetpos(t: FILE_ptr, pos: *const libc::fpos_t) -> libc::c_int {
+pub fn fsetpos(t: FILE_ptr, pos: *const libc::fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;

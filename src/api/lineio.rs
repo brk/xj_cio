@@ -56,7 +56,7 @@ pub fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::
 
 /// `fputs(s, fp)`. Writes the entire NUL-terminated string. Returns
 /// a non-negative integer on success, `EOF` on error.
-pub fn fputs(s: &CStr, t: FILE_ptr) -> libc::c_int {
+pub fn fputs(s: &CStr, t: FILE_ptr) -> core::ffi::c_int {
     let bytes = s.to_bytes();
     let r = ops::with_token(t, |st| {
         if !st.mode.writable() {
@@ -73,7 +73,7 @@ pub fn fputs(s: &CStr, t: FILE_ptr) -> libc::c_int {
 }
 
 /// `puts(s)`. Writes the string followed by `\n` to stdout.
-pub fn puts(s: &CStr) -> libc::c_int {
+pub fn puts(s: &CStr) -> core::ffi::c_int {
     let bytes = s.to_bytes();
     let stdout = crate::api::stdio_::stdout();
     let r = ops::with_token(stdout, |st| {

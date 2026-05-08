@@ -79,7 +79,7 @@ pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr {
     slots::insert(Arc::new(FILE::new(state)))
 }
 
-pub fn fclose(t: FILE_ptr) -> libc::c_int {
+pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
     let arc = match slots::remove(t) {
         Some(a) => a,
         None => {
@@ -182,7 +182,7 @@ pub fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {
     slots::insert(Arc::new(FILE::new(state)))
 }
 
-pub fn fileno(t: FILE_ptr) -> libc::c_int {
+pub fn fileno(t: FILE_ptr) -> core::ffi::c_int {
     let arc = match slots::lookup(t) {
         Some(a) => a,
         None => {
@@ -254,7 +254,7 @@ pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
     dst
 }
 
-pub fn remove(path: &CStr) -> libc::c_int {
+pub fn remove(path: &CStr) -> core::ffi::c_int {
     let p = match cstr_to_path(path) {
         Some(p) => p,
         None => {
@@ -279,7 +279,7 @@ pub fn remove(path: &CStr) -> libc::c_int {
     }
 }
 
-pub fn rename(from: &CStr, to: &CStr) -> libc::c_int {
+pub fn rename(from: &CStr, to: &CStr) -> core::ffi::c_int {
     let f = match cstr_to_path(from) {
         Some(p) => p,
         None => {

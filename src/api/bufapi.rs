@@ -12,7 +12,7 @@ use super::stdio_::{stdio_mode, StdioMode};
 
 /// `fflush(fp)` — drains the write buffer to the kernel. `fp == 0`
 /// flushes every open writable stream.
-pub fn fflush(t: FILE_ptr) -> libc::c_int {
+pub fn fflush(t: FILE_ptr) -> core::ffi::c_int {
     if t == 0 {
         return fflush_all();
     }
@@ -26,7 +26,7 @@ pub fn fflush(t: FILE_ptr) -> libc::c_int {
     r.unwrap_or(EOF)
 }
 
-pub fn fflush_all() -> libc::c_int {
+pub fn fflush_all() -> core::ffi::c_int {
     let mut rv = 0;
     for arc in slots::snapshot() {
         let r = arc.with_state(|s| ops::flush_internal(s));
@@ -44,7 +44,7 @@ pub fn setvbuf(
     buf: *mut libc::c_char,
     mode: libc::c_int,
     size: libc::size_t,
-) -> libc::c_int {
+) -> core::ffi::c_int {
     let policy = match mode {
         x if x == _IOFBF => BufferPolicy::Full,
         x if x == _IOLBF => BufferPolicy::Line,

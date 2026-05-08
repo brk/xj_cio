@@ -73,17 +73,13 @@ unsafe impl Sync for MemStorage {}
 impl MemBacking {
     pub fn slice(&self) -> &[u8] {
         match &self.storage {
-            MemStorage::User { ptr, len } => unsafe {
-                std::slice::from_raw_parts(*ptr, *len)
-            },
+            MemStorage::User { ptr, len } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
             MemStorage::Owned(v) => v.as_slice(),
         }
     }
     pub fn slice_mut(&mut self) -> &mut [u8] {
         match &mut self.storage {
-            MemStorage::User { ptr, len } => unsafe {
-                std::slice::from_raw_parts_mut(*ptr, *len)
-            },
+            MemStorage::User { ptr, len } => unsafe { std::slice::from_raw_parts_mut(*ptr, *len) },
             MemStorage::Owned(v) => v.as_mut_slice(),
         }
     }
@@ -150,9 +146,7 @@ impl Handle {
             Handle::StdoutShared
             | Handle::StderrShared
             | Handle::StdoutBypass(_)
-            | Handle::StderrBypass(_) => {
-                Err(io::Error::from_raw_os_error(libc::EBADF))
-            }
+            | Handle::StderrBypass(_) => Err(io::Error::from_raw_os_error(libc::EBADF)),
             Handle::Closed => Err(io::Error::from_raw_os_error(libc::EBADF)),
         }
     }
@@ -244,7 +238,9 @@ impl Handle {
     pub fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match self {
             Handle::Regular(f) => f.seek(pos),
-            Handle::StdoutBypass(f) | Handle::StderrBypass(f) | Handle::StdinBypass(f) => f.seek(pos),
+            Handle::StdoutBypass(f) | Handle::StderrBypass(f) | Handle::StdinBypass(f) => {
+                f.seek(pos)
+            }
             Handle::Mem(m) => {
                 let cap = m.capacity as i64;
                 let cur = m.pos as i64;
@@ -266,7 +262,7 @@ impl Handle {
     }
 
     /// Underlying fd, or -1 if there is none (mem stream / closed).
-    pub fn raw_fd(&self) -> libc::c_int {
+    pub fn raw_fd(&self) -> core::ffi::c_int {
         match self {
             Handle::Regular(f) => f.as_raw_fd(),
             Handle::StdinShared => libc::STDIN_FILENO,
@@ -283,7 +279,11 @@ impl Handle {
     pub fn is_seekable(&self) -> bool {
         matches!(
             self,
-            Handle::Regular(_) | Handle::Mem(_) | Handle::StdoutBypass(_) | Handle::StderrBypass(_) | Handle::StdinBypass(_)
+            Handle::Regular(_)
+                | Handle::Mem(_)
+                | Handle::StdoutBypass(_)
+                | Handle::StderrBypass(_)
+                | Handle::StdinBypass(_)
         )
     }
 

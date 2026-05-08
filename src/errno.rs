@@ -16,7 +16,7 @@ thread_local! {
 }
 
 /// Read the most recent errno value set on this thread.
-pub fn get() -> libc::c_int {
+pub fn get() -> core::ffi::c_int {
     ERRNO.with(|c| c.get())
 }
 
@@ -32,7 +32,7 @@ pub fn set(e: libc::c_int) {
 }
 
 /// Translate a `std::io::Error` into a POSIX errno integer.
-pub fn from_io(err: &io::Error) -> libc::c_int {
+pub fn from_io(err: &io::Error) -> core::ffi::c_int {
     err.raw_os_error().unwrap_or(libc::EIO)
 }
 

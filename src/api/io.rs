@@ -67,7 +67,7 @@ pub fn fwrite(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
     got / size
 }
 
-pub fn fgetc(t: FILE_ptr) -> libc::c_int {
+pub fn fgetc(t: FILE_ptr) -> core::ffi::c_int {
     let r = ops::with_token(t, |s| {
         if !s.mode.readable() {
             errno::set(libc::EBADF);
@@ -84,11 +84,11 @@ pub fn fgetc(t: FILE_ptr) -> libc::c_int {
 }
 
 #[inline]
-pub fn getc(t: FILE_ptr) -> libc::c_int {
+pub fn getc(t: FILE_ptr) -> core::ffi::c_int {
     fgetc(t)
 }
 
-pub fn fputc(c: libc::c_int, t: FILE_ptr) -> libc::c_int {
+pub fn fputc(c: libc::c_int, t: FILE_ptr) -> core::ffi::c_int {
     let byte = (c as u32 & 0xff) as u8;
     let r = ops::with_token(t, |s| {
         if !s.mode.writable() {
@@ -105,15 +105,15 @@ pub fn fputc(c: libc::c_int, t: FILE_ptr) -> libc::c_int {
 }
 
 #[inline]
-pub fn putc(c: libc::c_int, t: FILE_ptr) -> libc::c_int {
+pub fn putc(c: libc::c_int, t: FILE_ptr) -> core::ffi::c_int {
     fputc(c, t)
 }
 
-pub fn getchar() -> libc::c_int {
+pub fn getchar() -> core::ffi::c_int {
     fgetc(crate::api::stdio_::stdin())
 }
 
-pub fn putchar(c: libc::c_int) -> libc::c_int {
+pub fn putchar(c: libc::c_int) -> core::ffi::c_int {
     fputc(c, crate::api::stdio_::stdout())
 }
 
@@ -121,7 +121,7 @@ pub fn putchar(c: libc::c_int) -> libc::c_int {
 /// implementation grows the pushback unboundedly (the C standard
 /// guarantees only one byte). Clears `eof`. Returns `c` on success
 /// or `EOF` if `c == EOF`.
-pub fn ungetc(c: libc::c_int, t: FILE_ptr) -> libc::c_int {
+pub fn ungetc(c: libc::c_int, t: FILE_ptr) -> core::ffi::c_int {
     if c == EOF {
         return EOF;
     }

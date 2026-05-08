@@ -12,46 +12,46 @@ pub use crate::format::{Arg, OutArg};
 
 use super::ops;
 
-pub fn fprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> libc::c_int {
+pub fn fprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     let bytes = fmt.to_bytes();
     let r = ops::with_token(t, |s| run_printf(s, bytes, args));
     r.unwrap_or(-1)
 }
 
-pub fn vfprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> libc::c_int {
+pub fn vfprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     fprintf(t, fmt, args)
 }
 
-pub fn printf(fmt: &CStr, args: &[Arg]) -> libc::c_int {
+pub fn printf(fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     fprintf(crate::api::stdio_::stdout(), fmt, args)
 }
 
-pub fn vprintf(fmt: &CStr, args: &[Arg]) -> libc::c_int {
+pub fn vprintf(fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     printf(fmt, args)
 }
 
-pub fn fscanf(t: FILE_ptr, fmt: &CStr, args: &[OutArg]) -> libc::c_int {
+pub fn fscanf(t: FILE_ptr, fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
     let bytes = fmt.to_bytes();
     let r = ops::with_token(t, |s| run_scanf(s, bytes, args));
     r.unwrap_or(-1)
 }
 
-pub fn vfscanf(t: FILE_ptr, fmt: &CStr, args: &[OutArg]) -> libc::c_int {
+pub fn vfscanf(t: FILE_ptr, fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
     fscanf(t, fmt, args)
 }
 
-pub fn scanf(fmt: &CStr, args: &[OutArg]) -> libc::c_int {
+pub fn scanf(fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
     fscanf(crate::api::stdio_::stdin(), fmt, args)
 }
 
-pub fn vscanf(fmt: &CStr, args: &[OutArg]) -> libc::c_int {
+pub fn vscanf(fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
     scanf(fmt, args)
 }
 
 /// `sprintf`-style formatter into a caller-provided buffer.
 /// Returns the number of bytes that *would have been* written
 /// (excluding the NUL terminator).
-pub fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args: &[Arg]) -> libc::c_int {
+pub fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     let bytes = fmt.to_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     crate::format::format_to_vec(&mut out, bytes, args);
@@ -67,7 +67,7 @@ pub fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args: &[Arg
     out.len() as libc::c_int
 }
 
-pub fn sprintf(buf: *mut libc::c_char, fmt: &CStr, args: &[Arg]) -> libc::c_int {
+pub fn sprintf(buf: *mut libc::c_char, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     snprintf(buf, libc::size_t::MAX, fmt, args)
 }
 

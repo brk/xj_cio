@@ -7,11 +7,11 @@ use crate::FILE_ptr;
 
 use super::ops;
 
-pub fn feof(t: FILE_ptr) -> libc::c_int {
+pub fn feof(t: FILE_ptr) -> core::ffi::c_int {
     ops::with_token(t, |s| if s.eof { 1 } else { 0 }).unwrap_or(0)
 }
 
-pub fn ferror(t: FILE_ptr) -> libc::c_int {
+pub fn ferror(t: FILE_ptr) -> core::ffi::c_int {
     ops::with_token(t, |s| if s.err { 1 } else { 0 }).unwrap_or(0)
 }
 

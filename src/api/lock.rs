@@ -64,7 +64,7 @@ pub fn flockfile(t: FILE_ptr) {
     }
 }
 
-pub fn ftrylockfile(t: FILE_ptr) -> libc::c_int {
+pub fn ftrylockfile(t: FILE_ptr) -> core::ffi::c_int {
     let arc = match slots::lookup(t) {
         Some(a) => a,
         None => return -1,

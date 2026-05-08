@@ -217,7 +217,7 @@ fn take_str(args: &[Arg], a: &mut usize) -> *const libc::c_char {
     *a += 1;
     v
 }
-fn take_char(args: &[Arg], a: &mut usize) -> libc::c_int {
+fn take_char(args: &[Arg], a: &mut usize) -> core::ffi::c_int {
     let v = match args.get(*a).copied() {
         Some(Arg::C(c)) => c,
         Some(Arg::I(v)) => v as libc::c_int,
@@ -635,7 +635,7 @@ fn pad_and_emit(out: &mut Vec<u8>, body: &[u8], width: Option<usize>, f_minus: b
 
 /// Top-level fprintf entry: format into a scratch buffer, then push
 /// it through the stream's buffering policy.
-pub fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> libc::c_int {
+pub fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> core::ffi::c_int {
     let mut out = Vec::with_capacity(fmt.len() + 16);
     format_to_vec(&mut out, fmt, args);
     if !state.mode.writable() {
@@ -653,7 +653,7 @@ pub fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> libc::c_int {
 // scanf engine
 // --------------------------------------------------------------------------
 
-pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> libc::c_int {
+pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c_int {
     if !state.mode.readable() {
         errno::set(libc::EBADF);
         state.err = true;

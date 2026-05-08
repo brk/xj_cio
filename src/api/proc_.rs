@@ -76,7 +76,7 @@ pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
     slots::insert(Arc::new(FILE::new(state)))
 }
 
-pub fn pclose(t: FILE_ptr) -> libc::c_int {
+pub fn pclose(t: FILE_ptr) -> core::ffi::c_int {
     let arc = match slots::remove(t) {
         Some(a) => a,
         None => {
