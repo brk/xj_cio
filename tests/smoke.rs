@@ -1,0 +1,139 @@
+//! Round-trip smoke tests for the public API. Validates the
+//! architecture end-to-end on a handful of representative flows.
+
+use std::ffi::CString;
+use xj_cio::*;
+
+fn cstr(s: &str) -> CString {
+    CString::new(s).unwrap()
+}
+
+#[test]
+fn fopen_fwrite_fclose_fopen_fread_roundtrip() {
+    let path = std::env::temp_dir().join("xj_cio_smoke.bin");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("wb"));
+    assert_ne!(fp, 0);
+    let data = b"hello world";
+    let n = fwrite(data.as_ptr(), 1, data.len(), fp);
+    assert_eq!(n, data.len());
+    assert_eq!(fclose(fp), 0);
+
+    let fp = fopen(&p, &cstr("rb"));
+    assert_ne!(fp, 0);
+    let mut buf = [0u8; 32];
+    let n = fread(buf.as_mut_ptr(), 1, buf.len(), fp);
+    assert_eq!(n, data.len());
+    assert_eq!(&buf[..n], data);
+    assert_eq!(fclose(fp), 0);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fgetc_ungetc_roundtrip() {
+    let path = std::env::temp_dir().join("xj_cio_ungetc.bin");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("wb"));
+    fwrite(b"ABC".as_ptr(), 1, 3, fp);
+    fclose(fp);
+
+    let fp = fopen(&p, &cstr("rb"));
+    let a = fgetc(fp);
+    assert_eq!(a, b'A' as i32);
+    let u = ungetc(b'A' as i32, fp);
+    assert_eq!(u, b'A' as i32);
+    let a2 = fgetc(fp);
+    assert_eq!(a2, b'A' as i32);
+    let b = fgetc(fp);
+    assert_eq!(b, b'B' as i32);
+    fclose(fp);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fprintf_renders_int_and_string() {
+    use xj_cio::Arg;
+    let path = std::env::temp_dir().join("xj_cio_printf.txt");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("w"));
+    let s = cstr("world");
+    let r = fprintf(
+        fp,
+        &cstr("%d %s\n"),
+        &[Arg::I(42), Arg::S(s.as_ptr())],
+    );
+    assert!(r > 0);
+    fclose(fp);
+
+    let got = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(got, "42 world\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fscanf_two_ints_with_whitespace() {
+    use xj_cio::OutArg;
+    let path = std::env::temp_dir().join("xj_cio_scanf.txt");
+    let p = cstr(path.to_str().unwrap());
+    std::fs::write(&path, "  12   34 ").unwrap();
+
+    let fp = fopen(&p, &cstr("r"));
+    let mut a: libc::c_int = -1;
+    let mut b: libc::c_int = -1;
+    let r = fscanf(
+        fp,
+        &cstr("%d %d"),
+        &[OutArg::Int(&mut a as *mut _), OutArg::Int(&mut b as *mut _)],
+    );
+    assert_eq!(r, 2);
+    assert_eq!(a, 12);
+    assert_eq!(b, 34);
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn invalid_token_returns_ebadf() {
+    let bad = 0x12345678usize;
+    assert_eq!(fclose(bad), EOF);
+    assert_eq!(errno::get(), libc::EBADF);
+}
+
+#[test]
+fn fseek_ftell_roundtrip() {
+    let path = std::env::temp_dir().join("xj_cio_seek.txt");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("wb"));
+    fwrite(b"0123456789".as_ptr(), 1, 10, fp);
+    fclose(fp);
+
+    let fp = fopen(&p, &cstr("rb"));
+    assert_eq!(fseek(fp, 0, libc::SEEK_END), 0);
+    assert_eq!(ftell(fp), 10);
+    assert_eq!(fseek(fp, 5, libc::SEEK_SET), 0);
+    assert_eq!(ftell(fp), 5);
+    let c = fgetc(fp);
+    assert_eq!(c, b'5' as i32);
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fmemopen_write_roundtrip() {
+    let mut buf = [b'#'; 16];
+    let fp = fmemopen(buf.as_mut_ptr() as *mut _, buf.len(), &cstr("w"));
+    assert_ne!(fp, 0);
+    let cs = cstr("hi");
+    fputs(&cs, fp);
+    fclose(fp);
+    assert_eq!(buf[0], b'h');
+    assert_eq!(buf[1], b'i');
+    assert_eq!(buf[2], b'\0');
+    assert_eq!(buf[3], b'#');
+}

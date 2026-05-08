@@ -1,0 +1,24 @@
+[package]
+name = "xj_cio"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "xj_cio"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Routes std's `print!`/`eprintln!` through xj_cio's stdout buffer by
+# calling the unstable `io::set_output_capture` hook. Requires a
+# nightly toolchain.
+set_output_capture = []
+
+[dependencies]
+slotmap = "1"
+parking_lot = "0.12"
+libc = "0.2"
+smallvec = "1"
+
+[dev-dependencies]
+libc = "0.2"
