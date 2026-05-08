@@ -2,6 +2,9 @@
 name = "xj_cio"
 version = "0.1.0"
 edition = "2024"
+description = "Safe implementations of core C IO APIs"
+license = "MIT"
+repository = "https://github.com/brk/xj_cio"
 
 [lib]
 name = "xj_cio"
