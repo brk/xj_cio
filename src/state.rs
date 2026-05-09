@@ -13,6 +13,7 @@
 //! function while holding it, so the inner borrow never panics.
 
 use std::cell::RefCell;
+use std::sync::atomic::AtomicBool;
 
 use parking_lot::ReentrantMutex;
 use smallvec::SmallVec;
@@ -124,12 +125,20 @@ impl State {
 }
 
 pub struct FILE {
+    /// `true` once `fclose` has been called against this `FILE`. The
+    /// slot in the global registry is removed before this is set, so
+    /// future public-API lookups already fail with `EBADF`. The bit
+    /// covers a narrower window: it tells *already-cloned* `Arc<FILE>`
+    /// holders (in-flight ops, `StreamGuard`s) to bail before
+    /// touching `State`. See `notes/_closed_bit.md`.
+    pub closed: AtomicBool,
     inner: ReentrantMutex<RefCell<State>>,
 }
 
 impl FILE {
     pub fn new(state: State) -> Self {
         FILE {
+            closed: AtomicBool::new(false),
             inner: ReentrantMutex::new(RefCell::new(state)),
         }
     }

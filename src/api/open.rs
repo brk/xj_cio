@@ -87,15 +87,31 @@ pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
             return EOF;
         }
     };
-    let res = arc.with_state(|s| {
-        let r = ops::flush_internal(s);
-        // Replace handle with Closed so any in-flight Arc holders
-        // observe a defined no-op state. Real close happens via the
-        // Drop impl on the inner File / OwnedFd when Arc count
-        // hits zero.
-        s.handle = Handle::Closed;
-        r
-    });
+    // Mark the FILE closed *before* trying to flush. In-flight ops
+    // and StreamGuards that already cloned the Arc bail with EBADF
+    // when they observe the bit; new lookups already fail because
+    // `slots::remove` ran first.
+    arc.closed.store(true, std::sync::atomic::Ordering::Release);
+
+    // `inner.lock()` is reentrant on the same thread, so this never
+    // self-deadlocks. The panic-prone step is the *RefCell* borrow:
+    // a `StreamGuard` held by this thread already owns a `RefMut`,
+    // which would make `borrow_mut()` panic. `try_borrow_mut()`
+    // returns `Err` in that case and we fall through to the deferred
+    // path: the StreamGuard's eventual drop releases the borrow,
+    // and `FILE::drop` (running when the last Arc dies) does a
+    // best-effort flush. See `notes/_closed_bit.md` for the trade-
+    // off (synchronous flush errors are lost in the deferred path).
+    let guard = arc.raw_lock();
+    let res = match guard.try_borrow_mut() {
+        Ok(mut s) => {
+            let r = ops::flush_internal(&mut s);
+            s.handle = Handle::Closed;
+            r
+        }
+        Err(_) => Ok(()),
+    };
+    drop(guard);
     drop(arc);
     match res {
         Ok(_) => 0,

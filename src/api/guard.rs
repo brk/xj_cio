@@ -53,26 +53,36 @@ pub struct StreamGuard {
 }
 
 impl StreamGuard {
-    fn new(arc: Arc<FILE>, token: FILE_ptr) -> Self {
+    fn new(arc: Arc<FILE>, token: FILE_ptr) -> Option<Self> {
         // SAFETY: `_arc` is held in the same struct; field drop order
         // (state, then _guard, then _arc) ensures both extended
         // borrows are released while their referent is still alive.
         let guard: ReentrantMutexGuard<'static, RefCell<State>> =
             unsafe { std::mem::transmute(arc.raw_lock()) };
+        // Race-window check: we may have cloned the Arc just before
+        // `fclose` ran. The closed bit (set under `Release` by
+        // `fclose`) tells us so. Drop the guard and bail; the caller
+        // sets `errno = EBADF`.
+        if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let state: RefMut<'static, State> =
             unsafe { std::mem::transmute(guard.borrow_mut()) };
-        StreamGuard {
+        Some(StreamGuard {
             state: ManuallyDrop::new(state),
             _guard: ManuallyDrop::new(guard),
             _arc: arc,
             token,
-        }
+        })
     }
 
     fn try_new(arc: Arc<FILE>, token: FILE_ptr) -> Option<Self> {
         // SAFETY: same justification as `new`.
         let guard: ReentrantMutexGuard<'static, RefCell<State>> =
             unsafe { std::mem::transmute(arc.raw_try_lock()?) };
+        if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let state: RefMut<'static, State> =
             unsafe { std::mem::transmute(guard.borrow_mut()) };
         Some(StreamGuard {
@@ -170,7 +180,11 @@ pub fn stream_lock(t: FILE_ptr) -> Option<StreamGuard> {
             return None;
         }
     };
-    Some(StreamGuard::new(arc, t))
+    let g = StreamGuard::new(arc, t);
+    if g.is_none() {
+        errno::set(libc::EBADF);
+    }
+    g
 }
 
 /// Try-lock variant. Returns `None` on contention or invalid token.
@@ -184,7 +198,13 @@ pub fn stream_try_lock(t: FILE_ptr) -> Option<StreamGuard> {
             return None;
         }
     };
-    StreamGuard::try_new(arc, t)
+    let g = StreamGuard::try_new(arc, t);
+    // Note: we don't set errno on simple contention (None from try_new
+    // due to mutex held by another thread); only on the closed-race
+    // case do we want EBADF. Distinguishing is awkward without
+    // returning a richer error, so we leave errno alone — the caller
+    // can call `errno::get()` and test against EBADF if they care.
+    g
 }
 
 /// Lock stdin. The stdin slot is registered for the program's

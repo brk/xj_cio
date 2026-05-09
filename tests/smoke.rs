@@ -223,6 +223,42 @@ fn stream_guard_invalid_token_sets_ebadf() {
 }
 
 #[test]
+fn fclose_while_holding_stream_guard_does_not_panic() {
+    use std::io::Write;
+
+    let path = std::env::temp_dir().join("xj_cio_close_while_locked.txt");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("wb"));
+    let mut g = stream_lock(fp).unwrap();
+    g.write_all(b"hello").unwrap();
+
+    // Same-thread fclose while a StreamGuard is held: must not panic.
+    // Returns 0 optimistically; the actual flush happens when the
+    // last Arc dies (StreamGuard's Drop).
+    let rc = fclose(fp);
+    assert_eq!(rc, 0);
+
+    // Subsequent public-API calls on the (now-invalid) token return
+    // EBADF without touching state.
+    assert_eq!(ferror(fp), 0);
+    assert_eq!(fputc(b'x' as i32, fp), EOF);
+    assert_eq!(errno::get(), libc::EBADF);
+
+    // Drop the guard. FILE::drop runs; best-effort flush writes
+    // the buffered "hello" to disk.
+    drop(g);
+
+    let fp2 = fopen(&p, &cstr("rb"));
+    assert_ne!(fp2, 0);
+    let mut buf = [0u8; 16];
+    let n = fread(buf.as_mut_ptr(), 1, buf.len(), fp2);
+    assert_eq!(&buf[..n], b"hello");
+    fclose(fp2);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn stream_guard_eof_indicator_after_drain() {
     use std::io::Read;
 

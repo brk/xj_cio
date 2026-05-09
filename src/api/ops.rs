@@ -275,5 +275,13 @@ pub fn with_token<R>(t: crate::FILE_ptr, f: impl FnOnce(&mut State) -> R) -> Opt
             return None;
         }
     };
+    // A concurrent `fclose` may have removed the slot *and* set the
+    // closed bit between our `slots::lookup` and here; the bit
+    // catches the narrow race where we cloned the `Arc` first but
+    // `fclose` won the slot-removal race. See `notes/_closed_bit.md`.
+    if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
+        errno::set(libc::EBADF);
+        return None;
+    }
     Some(arc.with_state(f))
 }
