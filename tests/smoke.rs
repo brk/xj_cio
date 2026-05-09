@@ -259,6 +259,25 @@ fn fclose_while_holding_stream_guard_does_not_panic() {
 }
 
 #[test]
+fn print_macros_route_through_xj_cio_streams() {
+    // Smoke test: the four macros expand and run without panicking.
+    // Byte-level routing through `StreamGuard::write_fmt` is covered
+    // by `stream_guard_write_then_read`.
+    xj_cio::print!("a");
+    xj_cio::print!("b{}", 1);
+    xj_cio::println!();
+    xj_cio::println!("c");
+    xj_cio::println!("d{}", 2);
+    xj_cio::eprint!("e");
+    xj_cio::eprint!("f{}", 3);
+    xj_cio::eprintln!();
+    xj_cio::eprintln!("g");
+    xj_cio::eprintln!("h{}", 4);
+    let _ = fflush(stdout());
+    let _ = fflush(stderr());
+}
+
+#[test]
 fn stream_guard_eof_indicator_after_drain() {
     use std::io::Read;
 

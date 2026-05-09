@@ -33,15 +33,15 @@ fn print_macro_routed_through_xj_cio_buffer_in_capture_mode() {
     let test_sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     let prev = std::io::set_output_capture(Some(test_sink.clone()));
 
-    // `print!` -> goes to `test_sink` (we just stole the slot back
-    //              from xj_cio for the duration of this test).
+    // `std::print!` -> goes to `test_sink` (we just stole the slot
+    //              back from xj_cio for the duration of this test).
     // `our_fprintf` -> writes to actual stdout, which during cargo
     //                  test is *also* captured to test_sink.
     //
     // For a meaningful assertion that doesn't depend on stdout
     // capture, we instead verify that toggling capture on doesn't
     // panic and that the public surface compiles.
-    print!("from-print ");
+    std::print!("from-print ");
     let _ = fprintf(stdout(), &cstr("from-fprintf %d\n"), &[Arg::I(7)]);
     let _ = fflush(stdout());
 
@@ -55,7 +55,7 @@ fn capture_module_drain_returns_what_was_written() {
     use xj_cio::capture;
 
     capture::enable();
-    print!("hello-{}", 42);
+    std::print!("hello-{}", 42);
     let drained = capture::drain();
     capture::disable();
 
@@ -67,7 +67,7 @@ fn capture_module_drain_returns_what_was_written() {
 fn drain_is_empty_after_being_consumed() {
     use xj_cio::capture;
     capture::enable();
-    print!("x");
+    std::print!("x");
     let _ = capture::drain();
     let again = capture::drain();
     capture::disable();

@@ -16,11 +16,13 @@ mod state;
 mod slots;
 pub(crate) mod format;
 mod api;
+mod print;
 
 #[cfg(feature = "set_output_capture")]
 pub mod capture;
 
 pub use api::*;
+pub use print::{_eprint, _eprintln, _print, _println};
 
 /// Opaque token representing a stream. `0` is the null token.
 ///
