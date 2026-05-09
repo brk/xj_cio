@@ -137,3 +137,112 @@ fn fmemopen_write_roundtrip() {
     assert_eq!(buf[2], b'\0');
     assert_eq!(buf[3], b'#');
 }
+
+#[test]
+fn stream_guard_bufread_on_regular_file() {
+    use std::io::BufRead;
+
+    let path = std::env::temp_dir().join("xj_cio_streamguard_bufread.txt");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("wb"));
+    fwrite(b"line one\nline two\nline three\n".as_ptr(), 1, 29, fp);
+    fclose(fp);
+
+    let fp = fopen(&p, &cstr("rb"));
+    {
+        let mut g = stream_lock(fp).expect("valid token");
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            let n = g.read_line(&mut line).unwrap();
+            if n == 0 {
+                break;
+            }
+            lines.push(line);
+        }
+        assert_eq!(lines, vec!["line one\n", "line two\n", "line three\n"]);
+    }
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_guard_write_then_read() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let path = std::env::temp_dir().join("xj_cio_streamguard_rw.bin");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("w+b"));
+    {
+        let mut g = stream_lock(fp).unwrap();
+        g.write_all(b"abcdef").unwrap();
+        g.flush().unwrap();
+        g.seek(SeekFrom::Start(0)).unwrap();
+        let mut out = Vec::new();
+        g.read_to_end(&mut out).unwrap();
+        assert_eq!(&out, b"abcdef");
+    }
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_guard_pushback_appears_in_fill_buf() {
+    use std::io::BufRead;
+
+    let path = std::env::temp_dir().join("xj_cio_streamguard_unget.txt");
+    let p = cstr(path.to_str().unwrap());
+
+    let fp = fopen(&p, &cstr("wb"));
+    fwrite(b"world".as_ptr(), 1, 5, fp);
+    fclose(fp);
+
+    let fp = fopen(&p, &cstr("rb"));
+    {
+        let mut g = stream_lock(fp).unwrap();
+        // Push "Xy" — pushback is LIFO, so consumption order is "yX".
+        g.unget(b'X').unwrap();
+        g.unget(b'y').unwrap();
+        let buf = g.fill_buf().unwrap();
+        // First two bytes should be the LIFO-ordered pushback,
+        // followed by the actual file contents.
+        assert_eq!(&buf[..2], b"yX");
+        assert!(buf.len() >= 2);
+    }
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_guard_invalid_token_sets_ebadf() {
+    let bad = 0x12345678usize;
+    assert!(stream_lock(bad).is_none());
+    assert_eq!(errno::get(), libc::EBADF);
+}
+
+#[test]
+fn stream_guard_eof_indicator_after_drain() {
+    use std::io::Read;
+
+    let path = std::env::temp_dir().join("xj_cio_streamguard_eof.bin");
+    let p = cstr(path.to_str().unwrap());
+    let fp = fopen(&p, &cstr("wb"));
+    fwrite(b"ab".as_ptr(), 1, 2, fp);
+    fclose(fp);
+
+    let fp = fopen(&p, &cstr("rb"));
+    {
+        let mut g = stream_lock(fp).unwrap();
+        let mut sink = Vec::new();
+        g.read_to_end(&mut sink).unwrap();
+        assert_eq!(&sink, b"ab");
+        assert!(g.eof());
+        assert!(!g.error());
+        g.clear_err();
+        assert!(!g.eof());
+    }
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}

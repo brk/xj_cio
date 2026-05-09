@@ -18,6 +18,7 @@ pub mod mem;
 pub mod proc_;
 pub mod stdio_;
 pub mod fmt_;
+pub mod guard;
 
 pub use open::*;
 pub use io::*;
@@ -30,3 +31,4 @@ pub use mem::*;
 pub use proc_::*;
 pub use stdio_::*;
 pub use fmt_::*;
+pub use guard::*;
