@@ -122,7 +122,10 @@ pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
     }
 }
 
-pub fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
+/// Safe sibling of `freopen`. `path = None` corresponds to
+/// `freopen(NULL, mode, fp)` (mode-change on the existing handle,
+/// which we don't support — returns 0 with `errno = EINVAL`).
+pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
     let arc = match slots::lookup(t) {
         Some(a) => a,
         None => {
@@ -147,13 +150,13 @@ pub fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr 
         s.err = false;
         s.last_op = crate::state::Direction::Either;
 
-        if path.is_null() {
+        let cstr = match path {
             // POSIX freopen(NULL, mode, fp): change mode of the
             // existing handle. We don't preserve the underlying fd
             // here, so degrade gracefully.
-            return Err(libc::EINVAL);
-        }
-        let cstr = unsafe { CStr::from_ptr(path) };
+            None => return Err(libc::EINVAL),
+            Some(c) => c,
+        };
         let p = match cstr_to_path(cstr) {
             Some(p) => p,
             None => return Err(libc::EINVAL),
@@ -173,6 +176,15 @@ pub fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr 
             0
         }
     }
+}
+
+pub fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
+    let p = if path.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(path) })
+    };
+    freopen_(p, mode, t)
 }
 
 pub fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {

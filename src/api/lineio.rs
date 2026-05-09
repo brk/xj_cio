@@ -7,20 +7,21 @@ use crate::{EOF, FILE_ptr};
 
 use super::ops;
 
-/// `fgets(buf, n, fp)`. Reads up to `n-1` bytes; stops at `\n`
-/// (which is included) or EOF. Always NUL-terminates if `n >= 1`.
-/// Returns `buf` on success, `NULL` on EOF-before-any-bytes or error.
-pub fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::c_char {
-    if n <= 0 || buf.is_null() {
-        return std::ptr::null_mut();
+/// Safe sibling of `fgets`. Reads up to `dst.len() - 1` bytes into
+/// `dst`, stopping at `\n` (which is included) or EOF, and writes a
+/// trailing NUL. Returns the number of payload bytes (excluding the
+/// NUL) on success, `None` on EOF-before-any-bytes or error. `dst`
+/// must be non-empty.
+pub fn fgets_(dst: &mut [u8], t: FILE_ptr) -> Option<usize> {
+    let cap = dst.len();
+    if cap == 0 {
+        return None;
     }
-    let cap = n as usize;
     if cap == 1 {
         // Per POSIX: write only the NUL.
-        unsafe { *buf = 0 };
-        return buf;
+        dst[0] = 0;
+        return Some(0);
     }
-    let dst = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, cap) };
     let got = ops::with_token(t, |s| {
         if !s.mode.readable() {
             errno::set(libc::EBADF);
@@ -42,15 +43,25 @@ pub fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::
             }
         }
         if written == 0 {
-            // EOF before any byte
             return None;
         }
         dst[written] = 0;
         Some(written)
     });
-    match got {
-        Some(Some(_)) => buf,
-        _ => std::ptr::null_mut(),
+    got.flatten()
+}
+
+/// `fgets(buf, n, fp)`. Reads up to `n-1` bytes; stops at `\n`
+/// (which is included) or EOF. Always NUL-terminates if `n >= 1`.
+/// Returns `buf` on success, `NULL` on EOF-before-any-bytes or error.
+pub fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::c_char {
+    if n <= 0 || buf.is_null() {
+        return std::ptr::null_mut();
+    }
+    let dst = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, n as usize) };
+    match fgets_(dst, t) {
+        Some(_) => buf,
+        None => std::ptr::null_mut(),
     }
 }
 

@@ -7,6 +7,26 @@ use crate::{EOF, FILE_ptr};
 
 use super::ops;
 
+/// Safe sibling of `fread`. Reads up to `dst.len()` bytes into `dst`
+/// and returns the number of bytes actually read. Sets `eof`/`err`.
+pub fn fread_(dst: &mut [u8], t: FILE_ptr) -> usize {
+    if dst.is_empty() {
+        return 0;
+    }
+    let got: Option<usize> = ops::with_token(t, |s| {
+        if !s.mode.readable() {
+            errno::set(libc::EBADF);
+            s.err = true;
+            return 0usize;
+        }
+        match ops::read_into(s, dst) {
+            Ok(n) => n,
+            Err(_) => 0,
+        }
+    });
+    got.unwrap_or(0)
+}
+
 /// `fread(buf, size, n, fp)`. Returns the number of *complete items*
 /// actually read (i.e. `bytes_read / size`). Sets `eof`/`err`.
 pub fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
@@ -21,20 +41,27 @@ pub fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
         }
     };
     let dst = unsafe { std::slice::from_raw_parts_mut(buf, total) };
+    fread_(dst, t) / size
+}
 
-    let got: Option<usize> = ops::with_token(t, |s| {
-        if !s.mode.readable() {
+/// Safe sibling of `fwrite`. Writes `src` to the stream and returns
+/// the number of bytes actually written.
+pub fn fwrite_(src: &[u8], t: FILE_ptr) -> usize {
+    if src.is_empty() {
+        return 0;
+    }
+    ops::with_token(t, |s| {
+        if !s.mode.writable() {
             errno::set(libc::EBADF);
             s.err = true;
             return 0usize;
         }
-        match ops::read_into(s, dst) {
-            Ok(n) => n,
+        match ops::write_from(s, src) {
+            Ok(k) => k,
             Err(_) => 0,
         }
-    });
-    let bytes = got.unwrap_or(0);
-    bytes / size
+    })
+    .unwrap_or(0)
 }
 
 /// `fwrite(buf, size, n, fp)`. Returns the number of complete items
@@ -51,20 +78,7 @@ pub fn fwrite(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
         }
     };
     let src = unsafe { std::slice::from_raw_parts(buf, total) };
-
-    let got = ops::with_token(t, |s| {
-        if !s.mode.writable() {
-            errno::set(libc::EBADF);
-            s.err = true;
-            return 0usize;
-        }
-        match ops::write_from(s, src) {
-            Ok(k) => k,
-            Err(_) => 0,
-        }
-    })
-    .unwrap_or(0);
-    got / size
+    fwrite_(src, t) / size
 }
 
 pub fn fgetc(t: FILE_ptr) -> core::ffi::c_int {

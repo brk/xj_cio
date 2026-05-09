@@ -22,13 +22,13 @@ pub fn clearerr(t: FILE_ptr) {
     });
 }
 
-/// `perror(prefix)` writes "<prefix>: <strerror(errno)>\n" to stderr.
-pub fn perror(prefix: *const libc::c_char) {
+/// Safe sibling of `perror`. Writes "<prefix>: <strerror(errno)>\n"
+/// (or just "<strerror(errno)>\n" if `prefix` is `None`) to stderr.
+pub fn perror_(prefix: Option<&CStr>) {
     let saved = errno::get();
     let stderr = crate::api::stdio_::stderr();
     let _ = ops::with_token(stderr, |s| {
-        if !prefix.is_null() {
-            let cstr = unsafe { CStr::from_ptr(prefix) };
+        if let Some(cstr) = prefix {
             let bytes = cstr.to_bytes();
             if !bytes.is_empty() {
                 let _ = ops::write_from(s, bytes);
@@ -44,4 +44,14 @@ pub fn perror(prefix: *const libc::c_char) {
         let _ = ops::write_from(s, b"\n");
         let _ = ops::flush_internal(s);
     });
+}
+
+/// `perror(prefix)` writes "<prefix>: <strerror(errno)>\n" to stderr.
+pub fn perror(prefix: *const libc::c_char) {
+    let p = if prefix.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(prefix) })
+    };
+    perror_(p);
 }
