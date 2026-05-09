@@ -18,7 +18,7 @@ use std::sync::atomic::AtomicBool;
 use parking_lot::ReentrantMutex;
 use smallvec::SmallVec;
 
-use crate::buffer::{Buffer, BufferPolicy, UserBuf};
+use crate::buffer::{Buffer, BufferPolicy};
 use crate::handle::Handle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +105,6 @@ pub struct State {
     pub err: bool,
     pub mode: OpenMode,
     pub orientation: Orientation,
-    pub user_buffer: Option<UserBuf>,
 }
 
 impl State {
@@ -119,7 +118,6 @@ impl State {
             err: false,
             mode,
             orientation: Orientation::Unset,
-            user_buffer: None,
         }
     }
 }

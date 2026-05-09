@@ -1,7 +1,7 @@
 //! Buffering: `setbuf`, `setvbuf`, `fflush`, plus `fflush(NULL)` via
 //! the `fflush_all` helper.
 
-use crate::buffer::{Buffer, BufferPolicy, UserBuf};
+use crate::buffer::{Buffer, BufferPolicy};
 use crate::errno;
 use crate::handle::Handle;
 use crate::slots;
@@ -37,11 +37,13 @@ pub fn fflush_all() -> core::ffi::c_int {
     rv
 }
 
-/// `setvbuf(fp, buf, mode, size)`. Switches the policy and (if
-/// `buf` is non-null) records the user's buffer pointer.
+/// `setvbuf(fp, buf, mode, size)`. Switches the policy and (re)allocates
+/// the internal buffer to `size` (or `BUFSIZ` if `size == 0`). The
+/// `buf` argument is accepted for C compatibility but ignored — xj_cio
+/// always owns the backing buffer.
 pub fn setvbuf(
     t: FILE_ptr,
-    buf: *mut libc::c_char,
+    _buf: *mut libc::c_char,
     mode: libc::c_int,
     size: libc::size_t,
 ) -> core::ffi::c_int {
@@ -71,17 +73,11 @@ pub fn setvbuf(
         if is_stdio_shared {
             match stdio_mode() {
                 StdioMode::Shared => {
-                    // Honor _IONBF only; ignore size/buf otherwise.
+                    // Honor _IONBF only; ignore size/buf otherwise —
+                    // we cannot point std's writer at the user buffer.
                     if matches!(policy, BufferPolicy::None) {
                         s.buffer = Buffer::new(BufferPolicy::None, 0);
                     }
-                    // Buf pointer & size are recorded but not used
-                    // — we cannot point std's writer at it.
-                    s.user_buffer = if buf.is_null() {
-                        None
-                    } else {
-                        Some(UserBuf { ptr: buf as *mut u8, size })
-                    };
                     return 0;
                 }
                 StdioMode::Bypass => {
@@ -110,25 +106,10 @@ pub fn setvbuf(
 
         let cap = match policy {
             BufferPolicy::None => 0,
-            _ => {
-                if buf.is_null() {
-                    if size == 0 { BUFSIZ } else { size }
-                } else if size == 0 {
-                    BUFSIZ
-                } else {
-                    size
-                }
-            }
+            _ if size == 0 => BUFSIZ,
+            _ => size,
         };
         s.buffer = Buffer::new(policy, cap);
-        s.user_buffer = if buf.is_null() {
-            None
-        } else {
-            Some(UserBuf {
-                ptr: buf as *mut u8,
-                size,
-            })
-        };
         0
     });
     r.unwrap_or(-1)

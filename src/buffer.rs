@@ -14,23 +14,10 @@ pub enum BufferPolicy {
     None,
 }
 
-/// Bytes the user supplied via `setvbuf(buf, ...)`.
-#[derive(Debug)]
-pub struct UserBuf {
-    /// Pointer to the user's buffer. We do *not* store into it
-    /// (translated C code might read it concurrently and we offer no
-    /// guarantee of synchronization beyond the stream lock).
-    pub ptr: *mut u8,
-    pub size: usize,
-}
-
-unsafe impl Send for UserBuf {}
-unsafe impl Sync for UserBuf {}
-
 /// The buffer state owned by every stream.
 pub struct Buffer {
-    /// Backing store. Owned by us; the `UserBuf` (if any) is just
-    /// a recorded courtesy for callers that pass `setvbuf(buf, ...)`.
+    /// Backing store. Always owned by us; `setvbuf(buf, ...)` records
+    /// the policy and size but the caller's buffer pointer is ignored.
     pub data: Vec<u8>,
     /// In read mode: bytes 0..fill are the next bytes to read,
     /// starting at `cursor`. In write mode: bytes 0..fill are
