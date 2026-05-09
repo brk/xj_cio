@@ -35,7 +35,15 @@ fn parse_mem_mode(s: &CStr) -> Option<(MemMode, OpenMode)> {
     })
 }
 
-pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE_ptr {
+fn open_mem(storage: MemStorage, mode: &CStr) -> FILE_ptr {
+    let capacity = match &storage {
+        MemStorage::Owned(v) => v.len(),
+        MemStorage::User { len, .. } => *len,
+    };
+    if capacity == 0 {
+        errno::set(libc::EINVAL);
+        return 0;
+    }
     let (mm, om) = match parse_mem_mode(mode) {
         Some(p) => p,
         None => {
@@ -43,46 +51,22 @@ pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE
             return 0;
         }
     };
-    if size == 0 {
-        errno::set(libc::EINVAL);
-        return 0;
-    }
-
-    let storage = if buf.is_null() {
-        MemStorage::Owned(vec![0u8; size])
-    } else {
-        MemStorage::User {
-            ptr: buf as *mut u8,
-            len: size,
-        }
-    };
 
     // Initial size: for "r" / "r+" the buffer is considered already
-    // populated up to `size` (or up to the first NUL — POSIX is
-    // explicit but for simplicity we treat it as `size`). For "w" /
-    // "w+" we truncate. For "a" / "a+" we seek to the first NUL.
+    // populated up to `capacity`. For "w" / "w+" we truncate to 0.
+    // For "a" / "a+" we seek to the first NUL (strlen-or-cap).
     let mut backing = MemBacking {
         storage,
-        capacity: size,
+        capacity,
         size: match mm {
-            MemMode::R | MemMode::Rplus => size,
-            MemMode::W | MemMode::Wplus => 0,
-            MemMode::A | MemMode::Aplus => {
-                // Seek past existing content (up to first NUL).
-                // For owned (we just zero'd) this is 0; for user-buf
-                // it's the strlen.
-                let start = match &storage_helper(&mm) {
-                    _ => 0usize,
-                };
-                start
-            }
+            MemMode::R | MemMode::Rplus => capacity,
+            MemMode::W | MemMode::Wplus | MemMode::A | MemMode::Aplus => 0,
         },
         pos: 0,
         mode: mm,
     };
 
     if matches!(mm, MemMode::A | MemMode::Aplus) {
-        // Compute initial size as strlen-or-cap of existing buf.
         let bytes = backing.slice();
         let mut n = bytes.len();
         for (i, &b) in bytes.iter().enumerate() {
@@ -99,8 +83,28 @@ pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE
     slots::insert(Arc::new(FILE::new(state)))
 }
 
-fn storage_helper(_m: &MemMode) -> usize {
-    0
+/// Safe equivalent of `fmemopen` over an owned buffer. The stream
+/// takes ownership of `buf`; its capacity is `buf.len()`. Returns 0
+/// (with `errno`) on invalid mode or empty buffer.
+pub fn fmemopen_(buf: Vec<u8>, mode: &CStr) -> FILE_ptr {
+    open_mem(MemStorage::Owned(buf), mode)
+}
+
+pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE_ptr {
+    if buf.is_null() {
+        if size == 0 {
+            errno::set(libc::EINVAL);
+            return 0;
+        }
+        return fmemopen_(vec![0u8; size], mode);
+    }
+    open_mem(
+        MemStorage::User {
+            ptr: buf as *mut u8,
+            len: size,
+        },
+        mode,
+    )
 }
 
 /// `open_memstream(*bufp, *sizep)` is not implemented in v1; returns
