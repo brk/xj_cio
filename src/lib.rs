@@ -19,6 +19,43 @@ pub(crate) mod format;
 mod api;
 mod print;
 
+#[cfg(feature = "cfmt")]
+mod cfmt;
+
+#[cfg(feature = "cfmt")]
+pub use cfmt::CioSink;
+
+#[cfg(feature = "cfmt")]
+#[doc(hidden)]
+pub use xj_cfmt as __cfmt;
+
+/// Formats through xj_cio's standard output stream.
+#[cfg(feature = "cfmt")]
+#[macro_export]
+macro_rules! cprintf {
+    ($($tokens:tt)*) => {
+        $crate::__cfmt::cemit!($crate::CioSink($crate::stdout()), $($tokens)*)
+    };
+}
+
+/// Formats through xj_cio's standard error stream.
+#[cfg(feature = "cfmt")]
+#[macro_export]
+macro_rules! ceprintf {
+    ($($tokens:tt)*) => {
+        $crate::__cfmt::cemit!($crate::CioSink($crate::stderr()), $($tokens)*)
+    };
+}
+
+/// Formats through an xj_cio stream.
+#[cfg(feature = "cfmt")]
+#[macro_export]
+macro_rules! cfprintf {
+    ($stream:expr, $($tokens:tt)*) => {
+        $crate::__cfmt::cemit!($crate::CioSink($stream), $($tokens)*)
+    };
+}
+
 #[cfg(feature = "set_output_capture")]
 pub mod capture;
 

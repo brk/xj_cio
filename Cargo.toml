@@ -2,6 +2,7 @@
 name = "xj_cio"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Safe implementations of core C IO APIs"
 license = "MIT"
 repository = "https://github.com/brk/xj_cio"
@@ -16,12 +17,14 @@ default = []
 # calling the unstable `io::set_output_capture` hook. Requires a
 # nightly toolchain.
 set_output_capture = []
+cfmt = ["dep:xj_cfmt"]
 
 [dependencies]
 slotmap = "1"
 parking_lot = "0.12"
 libc = "0.2"
 smallvec = "1"
+xj_cfmt = { path = "../../xj_cfmt", optional = true }
 
 [dev-dependencies]
 libc = "0.2"
