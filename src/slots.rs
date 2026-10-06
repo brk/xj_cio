@@ -63,6 +63,7 @@ pub fn decode(t: FILE_ptr) -> Option<FileKey> {
 
 /// Insert a fresh `FILE` and return its token.
 pub fn insert(f: Arc<FILE>) -> FILE_ptr {
+    crate::atexit::ensure_registered();
     with_write(|m| encode(m.insert(f)))
 }
 
