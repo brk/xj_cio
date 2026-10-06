@@ -1040,6 +1040,11 @@ fn parse_int_with_radix(s: &str, radix_hint: u32) -> Option<i64> {
 }
 
 fn parse_uint_with_radix(s: &str, radix: u32) -> Option<u64> {
-    let body = s.trim_start_matches(|c| c == '+');
-    u64::from_str_radix(body, radix).ok()
+    let (negative, body) = if let Some(body) = s.strip_prefix('-') {
+        (true, body)
+    } else {
+        (false, s.strip_prefix('+').unwrap_or(s))
+    };
+    let value = u64::from_str_radix(body, radix).ok()?;
+    Some(if negative { value.wrapping_neg() } else { value })
 }

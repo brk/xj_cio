@@ -105,6 +105,55 @@ fn invalid_token_returns_ebadf() {
 }
 
 #[test]
+fn fscanf_unsigned_signs_match_libc() {
+    let input = cstr("-1 -128 +42 -ff -10 -18446744073709551615");
+    let format = cstr("%u %u %u %x %o %llu");
+    let mut expected = [0 as libc::c_uint; 5];
+    let mut expected_wide: libc::c_ulonglong = 0;
+    let matched = unsafe {
+        libc::sscanf(
+            input.as_ptr(),
+            format.as_ptr(),
+            &mut expected[0] as *mut _,
+            &mut expected[1] as *mut _,
+            &mut expected[2] as *mut _,
+            &mut expected[3] as *mut _,
+            &mut expected[4] as *mut _,
+            &mut expected_wide as *mut _,
+        )
+    };
+    assert_eq!(matched, 6);
+    let stream = tmpfile();
+    assert!(!stream.is_null());
+    assert_eq!(
+        fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+        input.as_bytes().len()
+    );
+    rewind(stream);
+    let mut actual = [0 as libc::c_uint; 5];
+    let mut actual_wide: libc::c_ulonglong = 0;
+    let [a, b, c, d, e] = &mut actual;
+    assert_eq!(
+        fscanf(
+            stream,
+            &format,
+            &mut [
+                OutArg::UInt(a),
+                OutArg::UInt(b),
+                OutArg::UInt(c),
+                OutArg::UInt(d),
+                OutArg::UInt(e),
+                OutArg::ULongLong(&mut actual_wide),
+            ]
+        ),
+        matched
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(actual_wide, expected_wide);
+    assert_eq!(fclose(stream), 0);
+}
+
+#[test]
 fn stale_token_returns_ebadf_after_reopen() {
     let path = std::env::temp_dir().join("xj_cio_stale_token.txt");
     let p = cstr(path.to_str().unwrap());
