@@ -2,24 +2,31 @@
 
 use std::ffi::CStr;
 
+use xj_zstr::{CStrDest, ZString};
+
 use crate::errno;
 use crate::{EOF, FILE_ptr};
 
 use super::ops;
 
-/// Safe sibling of `fgets`. Reads up to `dst.len() - 1` bytes into
-/// `dst`, stopping at `\n` (which is included) or EOF, and writes a
-/// trailing NUL. Returns the number of payload bytes (excluding the
-/// NUL) on success, `None` on EOF-before-any-bytes or error. `dst`
-/// must be non-empty.
-pub fn fgets_(dst: &mut [u8], t: FILE_ptr) -> Option<usize> {
-    let cap = dst.len();
-    if cap == 0 {
+/// Safe sibling of `fgets`. `dst.c_size()` plays the role of C's `n`:
+/// reads up to `n - 1` bytes, stopping at `\n` (which is included) or
+/// EOF, and terminates them. Returns the number of payload bytes
+/// (excluding the NUL) on success, `None` on EOF-before-any-bytes,
+/// error, or `n == 0`.
+///
+/// Pass a byte array as `(&mut buf).into()`, a whole `ZStr` or
+/// `ZString` as `z.into()`, or a `ZStr` with a separate C size as
+/// `z.limit(n)`. Never pass `z.as_buffer_mut()`: as a plain slice it
+/// reads one byte less per call than C would.
+pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
+    if dst.c_size() == 0 {
         return None;
     }
-    if cap == 1 {
+    let max = dst.max_len();
+    if max == 0 {
         // Per POSIX: write only the NUL.
-        dst[0] = 0;
+        dst.terminate(0);
         return Some(0);
     }
     let got = ops::with_token(t, |s| {
@@ -28,11 +35,12 @@ pub fn fgets_(dst: &mut [u8], t: FILE_ptr) -> Option<usize> {
             s.err = true;
             return None;
         }
+        let region = dst.region_mut();
         let mut written = 0usize;
-        while written + 1 < cap {
+        while written < max {
             match ops::read_one(s) {
                 Ok(Some(b)) => {
-                    dst[written] = b;
+                    region[written] = b;
                     written += 1;
                     if b == b'\n' {
                         break;
@@ -45,7 +53,7 @@ pub fn fgets_(dst: &mut [u8], t: FILE_ptr) -> Option<usize> {
         if written == 0 {
             return None;
         }
-        dst[written] = 0;
+        dst.terminate(written);
         Some(written)
     });
     got.flatten()
@@ -59,7 +67,7 @@ pub fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::
         return std::ptr::null_mut();
     }
     let dst = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, n as usize) };
-    match fgets_(dst, t) {
+    match fgets_(dst.into(), t) {
         Some(_) => buf,
         None => std::ptr::null_mut(),
     }
@@ -191,6 +199,56 @@ fn getdelim_impl(
             *line_ptr = cur;
             *n_ptr = cap;
         }
+        len as libc::ssize_t
+    });
+    r.unwrap_or(-1)
+}
+
+/// Safe sibling of `getline`, reading into an owned [`ZString`].
+/// See [`getdelim_`].
+pub fn getline_(line: &mut ZString, t: FILE_ptr) -> libc::ssize_t {
+    getdelim_(line, b'\n' as libc::c_int, t)
+}
+
+/// Safe sibling of `getdelim`. Reads through the next `delim` byte
+/// (which is included) or EOF into `line`, growing it as `getdelim`
+/// reallocates `*lineptr`, and terminates the result. Returns the
+/// number of bytes read, or -1 on EOF-before-any-bytes or error.
+///
+/// As in C, the return value is the line's length: a line containing
+/// NUL bytes is stored whole, but `line.len()` stops at its first NUL.
+/// Bytes after the new terminator are left unchanged. `line`'s
+/// contents are unspecified after an error, as in C.
+pub fn getdelim_(line: &mut ZString, delim: libc::c_int, t: FILE_ptr) -> libc::ssize_t {
+    let r = ops::with_token(t, |s| {
+        if !s.mode.readable() {
+            errno::set(libc::EBADF);
+            s.err = true;
+            return -1;
+        }
+        let mut len = 0usize;
+        loop {
+            match ops::read_one(s) {
+                Ok(Some(b)) => {
+                    if len == line.capacity() {
+                        // Backing sizes 128, 256, 512, …, as `getdelim_impl`
+                        // grows its malloc'd buffer.
+                        line.grow_to((2 * len + 1).max(127));
+                    }
+                    line.as_buffer_mut()[len] = b;
+                    len += 1;
+                    if delim >= 0 && b as i32 == delim {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => return -1,
+            }
+        }
+        if len == 0 {
+            return -1;
+        }
+        CStrDest::from(&mut *line).terminate(len);
         len as libc::ssize_t
     });
     r.unwrap_or(-1)

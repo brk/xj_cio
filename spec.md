@@ -89,6 +89,8 @@ pub fn ferror(f: FILE_ptr) -> c_int;
 
 The handle-based signatures are chosen over Rust-native (`&mut Stream`) ones to keep mechanical translation close to the original source: every C `FILE *f` becomes a Rust `f: FILE_ptr`, and every `f == NULL` test becomes `f.is_null()`.
 
+Where a POSIX signature takes a raw buffer pointer, a safe sibling with a trailing underscore takes Rust types instead: `fread_`, `fwrite_`, `fmemopen_`, `perror_`, `freopen_`, and the string functions of §8 (`fgets_`, `snprintf_`, `tmpnam_`, `ctermid_`, `getline_`, `getdelim_`). Where practical, the raw version wraps its pointer and delegates to the sibling, so both share one implementation.
+
 The choice of `*const _File` is still compatible with the safety story (§7): although the handle is pointer-typed, it is not a real pointer into our data structures. The `_File` type is just an opaque placeholder, and the pointer bits are synthesized from slotmap keys rather than borrowed from a live `FILE` allocation. See §4.3.
 
 ### 3.3 Error model
@@ -432,7 +434,7 @@ Three categories of misbehavior from the translated program:
 
 - **(1) is fully caught.** Every entry point begins with a slotmap decode + lookup. Handles that were never issued, or whose generation is stale because the slot has been freed (and possibly reissued), produce `EBADF` deterministically. No state is touched, no real pointer is dereferenced, no UB.
 - **(2) is impossible by construction.** The translated code holds opaque `*const _File` handles, but they are not pointers to an exposed `_File` object or to any live internal allocation. The library does not export the layout of `_File` or `FILE`, does not provide `sizeof(FILE)`, and does not return pointers to its internal `Arc<FILE>` / `State`. A C-side `memset` or integer cast on a `FILE_ptr` only scribbles on the handle bits; the next call simply produces `EBADF` unless those bits happen to name a currently-live slot key.
-- **(3) produces defined error returns**, never UB. Closing twice: the second `fclose` finds an empty slot. Reading from a write-only stream: the `OpenMode` check fails inside the safe Rust state machine. Wrong buffer length: that's the caller's contract on the `*mut u8`, same as libc.
+- **(3) produces defined error returns**, never UB. Closing twice: the second `fclose` finds an empty slot. Reading from a write-only stream: the `OpenMode` check fails inside the safe Rust state machine. Wrong buffer length: that's the caller's contract on the `*mut u8`, same as libc. The safe siblings of §8 take sized destinations instead, and turn what would be an overflow into an error return or a bounds-check panic.
 
 Stronger stated: **a program that calls only the safe entry points, with valid `*mut u8` buffers, cannot trigger UB through this library.** The remaining unsafe entry points (`fdopen`, the variadic format functions) are the inherent FFI boundary; the translator marks them with `unsafe` blocks at the call site, and the translation still localizes the unsafety to those few sites instead of dispersing it across every stdio call.
 
@@ -442,6 +444,94 @@ Stronger stated: **a program that calls only the safe entry points, with valid `
 - **`fdopen` and variadic format** require `unsafe` at the call site; the translator emits these with `unsafe` blocks. A garbage fd or a malformed `va_list` is UB and not detectable by the library.
 - **Filesystem-level races** (TOCTOU on the path passed to `fopen`) are inherent to the OS and not addressable here.
 - **Slow `fclose` followed by `fopen` reusing the slot** can in principle produce a "false-positive valid handle": if a stale alias's encoded `(slot, gen)` value happens to match a *future* `(slot, gen)` after wraparound of the 32-bit generation counter, lookup would succeed and the operation would target the wrong stream. Slotmap uses a 32-bit generation field; for wraparound to occur, the same slot must be `fclose`d and `fopen`d 2³² times. This is not a practical concern, but is documented for completeness and can be hardened by widening the generation field if a concrete adversary model demands it.
+
+---
+
+## 8. String Types: Integration with `xj_zstr`
+
+`xj_cio` depends on `xj_zstr`, the `<string.h>` counterpart that provides the mutable, bounded, NUL-terminated `ZStr` and its owned form `ZString`. The dependency runs one way: `xj_zstr` knows nothing about streams, as `<string.h>` knows nothing about `<stdio.h>`.
+
+There is no parallel ZStr-specific copy of the API. Most functions need nothing ZStr-specific. The ones that do are those that write a terminated string into a caller's buffer, or that grow one.
+
+### 8.1 Parameter kinds
+
+| What C does with the string | Functions | `xj_cio` parameter | Passing a `ZStr` |
+|---|---|---|---|
+| Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, printf and scanf formats | `&CStr` | `z.as_c_str()`, which stops at the first NUL, as C does |
+| Reads or writes bytes with an explicit length | `fread_`, `fwrite_` | `&mut [u8]`, `&[u8]` | The view matching C's length argument: `as_bytes()` for `strlen(s)`, `as_buffer()` for `sizeof buf`, `as_buffer_mut()` or a sub-slice for reads |
+| Writes a terminated string into a sized buffer | `fgets_`, `snprintf_`, `tmpnam_`, `ctermid_`, scanf `%s`, `%c` and `%[` | `xj_zstr::CStrDest` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
+| Grows a string | `getline_`, `getdelim_` | `&mut ZString` | The `ZString` itself |
+
+Read-only parameters stay `&CStr`, so string literals (`c"r"`) and `CString`s work with no `xj_zstr` types. Parameters are concrete types rather than generics, so translated calls need no annotations.
+
+| C | Rust |
+|---|---|
+| `fopen(path, "r")`, `path` a `ZStr` | `fopen(path.as_c_str(), c"r")` |
+| `fgets(buf, sizeof buf, f)`, `char buf[N]` | `fgets_((&mut buf).into(), f)` |
+| `fgets(out, n, f)`, `out` a `ZStr` | `fgets_(out.limit(n), f)` |
+| `snprintf(out, n, fmt, …)`, non-literal `fmt` | `snprintf_(out.limit(n), fmt, &[…])` |
+| `getline(&line, &cap, f)` | `getline_(&mut line, f)`, `line: ZString`; read `cap` as `line.capacity() + 1` |
+| `fscanf(f, "%15s %d", word, &n)`, `char word[16]` | `fscanf(f, c"%15s %d", &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut n)])` |
+
+### 8.2 `CStrDest`
+
+C passes these functions a buffer and a size that includes the terminator. `CStrDest` carries the same information: a writable region, and whether a NUL is already guaranteed immediately after it. `c_size()` recovers C's size, and `max_len() = c_size() - 1` is the longest string that fits.
+
+- **A byte slice or array of length N** is `char buf[N]`: an N-byte region, not terminated. C size N.
+- **A `ZStr` with backing length N** hands out only its N − 1 writable bytes, because its final NUL is reserved and never writable. That NUL terminates the region, so the C size is still N.
+- **`ZStr::limit(n)`** gives C size `n` for any `n` up to the backing length, and panics beyond it, as slicing does.
+
+Passing `z.as_buffer_mut()` as a plain slice is safe but wrong. The slice has N − 1 bytes and spends one on the NUL, so `fgets_` would read at most N − 2 bytes where C reads N − 1, and a line of exactly N − 1 bytes would arrive in two pieces.
+
+`CStrDest` is shared with `xj_cfmt`. Under the `cfmt` feature it implements `xj_cfmt::CSnprintfDest`, so a value such as `out.limit(n)` serves `csnprintf!` and the functions below alike.
+
+Semantics:
+
+- **`fgets_(dst, f) -> Option<usize>`** behaves as `fgets(buf, dst.c_size(), f)`. It returns the number of bytes stored before the terminator. It returns `None` on EOF before any byte, on error, or when `c_size()` is zero, leaving `dst` unchanged on EOF.
+- **`snprintf_(dst, fmt, args) -> c_int`** is `snprintf(buf, dst.c_size(), …)` for runtime formats. Literal formats should use `xj_cfmt::csnprintf!`.
+- **`tmpnam_(dst)` and `ctermid_(dst)` -> `Option<usize>`** write the whole name and return its length. If it does not fit, they fail with `ERANGE` and leave `dst` untouched, because a truncated path names a different file. `c_size() >= L_tmpnam` (respectively `L_ctermid`) always suffices; generated temporary names are at most `L_tmpnam - 1` bytes.
+- **The raw versions** (`fgets`, `snprintf`, `sprintf`, `tmpnam`, `ctermid`) wrap their buffer in a `CStrDest` and delegate. `sprintf`'s unbounded size borrows only the bytes actually written.
+
+### 8.3 scanf: `OutArg::Buf`
+
+`OutArg<'a>` has a checked string variant, `Buf(CStrDest<'a>)`, alongside the unchecked raw `Str(*mut c_char)`. Because `Buf` borrows mutably, `OutArg` is not `Copy`, and the scanf family takes `&mut [OutArg<'_>]`.
+
+Where C would overflow the buffer, a `Buf` conversion fails instead:
+
+- **`%s` and `%[`** read at most `max_len() + 1` field bytes, or fewer if the format gives a width. If the field does not fit, the destination receives the first `max_len()` bytes, terminated. The extra byte is pushed back, so the rest of the field stays unread.
+- **`%Nc`** stores N bytes and no terminator, as in C. It may therefore fill the whole region, but not a `ZStr`'s reserved NUL. If `region_len() < N`, it fails before reading anything.
+- **On failure**, the call stops, returns the assignments made before the failed conversion, and sets `errno` to `EOVERFLOW`.
+
+### 8.4 `getline_` and `getdelim_`
+
+`getdelim_(line: &mut ZString, delim, f) -> ssize_t` reads through the next `delim` byte (inclusive) or EOF, and returns the number of bytes read. It returns -1 on EOF before any byte, or on error. `getline_` is `getdelim_` with `'\n'`.
+
+- **Growth.** `line` grows as C's `getdelim` reallocates `*lineptr`, through `ZString::grow_to`, to backing sizes 128, 256, 512, and so on. It never shrinks, so a reused `ZString` behaves like a reused `malloc` buffer.
+- **Embedded NULs.** As in C, the return value is the line's length. A line containing NUL bytes is stored whole, but `line.len()` stops at its first NUL.
+- **Leftover bytes.** Bytes after the new terminator are left unchanged.
+
+The raw `getline` and `getdelim` keep their `malloc`/`realloc` buffers. Those are owned by C's allocator and cannot become a `ZString`.
+
+### 8.5 Formatting
+
+The `cfmt` feature enables `xj_zstr/cfmt`. `ZStr` and `ZString` arguments then take `xj_cfmt`'s byte path in `cprintf!`, `ceprintf!` and `cfprintf!`, and `csnprintf!` accepts any `CStrDest`.
+
+### 8.6 Tests
+
+`tests/zstr.rs` covers:
+
+- `fgets_` reading the same number of bytes as C into a `ZString`, an array and a `limit(n)` view, for C sizes 0 and 1.
+- `getline_` growth across a 300-byte line, and `getdelim_` with an embedded NUL.
+- `snprintf_` truncation and the raw `snprintf` and `sprintf`.
+- `tmpnam_` and `ctermid_`, including the `ERANGE` case.
+- scanf `Buf` conversions:
+  - an exact fit;
+  - `%s` overflow, with the unread remainder;
+  - a width smaller than the destination;
+  - `%c` into an array and into a `ZStr` too small for it.
+- `&CStr` and `&[u8]` views of a `ZStr` passed to `fopen`, `fputs` and `fwrite_`.
+
+`tests/cfmt.rs` checks that a `ZStr` argument to `cfprintf!` takes the byte path.
 
 ---
 

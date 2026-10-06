@@ -25,8 +25,7 @@ unsafe impl Send for Arg {}
 unsafe impl Sync for Arg {}
 
 /// One output destination for `scanf` family.
-#[derive(Clone, Copy)]
-pub enum OutArg {
+pub enum OutArg<'a> {
     Suppress,
     Int(*mut libc::c_int),
     Short(*mut libc::c_short),
@@ -40,10 +39,21 @@ pub enum OutArg {
     /// `%s`, `%c`, `%[...]`: write bytes into a char buffer.
     /// The translator must size the buffer; this is *not* checked.
     Str(*mut libc::c_char),
+    /// `%s`, `%c`, `%[...]`: write bytes into a sized destination, such
+    /// as `(&mut buf).into()`, a `ZStr` as `z.into()`, or `z.limit(n)`.
+    ///
+    /// Where C would overflow the buffer, the conversion fails instead:
+    /// `%s` and `%[` store the first `max_len()` bytes, terminated,
+    /// leave the rest of the field unread, and stop. `%Nc`, which
+    /// stores N bytes and no terminator, needs `region_len() >= N`;
+    /// otherwise it stops before reading. Either way the call returns
+    /// the assignments made before the failed conversion and sets
+    /// `errno` to `EOVERFLOW`.
+    Buf(xj_zstr::CStrDest<'a>),
 }
 
-unsafe impl Send for OutArg {}
-unsafe impl Sync for OutArg {}
+unsafe impl Send for OutArg<'_> {}
+unsafe impl Sync for OutArg<'_> {}
 
 // --------------------------------------------------------------------------
 // printf engine
@@ -653,7 +663,7 @@ pub fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> core::ffi::c_i
 // scanf engine
 // --------------------------------------------------------------------------
 
-pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c_int {
+pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     if !state.mode.readable() {
         errno::set(libc::EBADF);
         state.err = true;
@@ -804,7 +814,7 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     _ => 0,
                 };
                 if !suppress {
-                    if let Some(arg) = args.get(a).copied() {
+                    if let Some(arg) = args.get(a) {
                         write_int_to_outarg(arg, parsed);
                     }
                     a += 1;
@@ -814,7 +824,7 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
             }
             b's' => {
                 skip_ws(state);
-                let cap = width.unwrap_or(usize::MAX);
+                let cap = field_limit(args, a, suppress, width.unwrap_or(usize::MAX));
                 let mut buf = Vec::new();
                 while buf.len() < cap {
                     let b = match ops::read_one(state) {
@@ -833,13 +843,8 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     return if consumed_any || matched > 0 { matched } else { -1 };
                 }
                 if !suppress {
-                    if let Some(OutArg::Str(p)) = args.get(a).copied() {
-                        unsafe {
-                            for (j, &b) in buf.iter().enumerate() {
-                                *p.add(j) = b as libc::c_char;
-                            }
-                            *p.add(buf.len()) = 0;
-                        }
+                    if store_string(state, args.get_mut(a), &mut buf).is_err() {
+                        return matched;
                     }
                     a += 1;
                     matched += 1;
@@ -848,6 +853,14 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
             }
             b'c' => {
                 let cap = width.unwrap_or(1);
+                if !suppress {
+                    if let Some(OutArg::Buf(dst)) = args.get(a) {
+                        if dst.region_len() < cap {
+                            errno::set(libc::EOVERFLOW);
+                            return matched;
+                        }
+                    }
+                }
                 let mut buf = Vec::with_capacity(cap);
                 while buf.len() < cap {
                     let b = match ops::read_one(state) {
@@ -861,12 +874,14 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     return if consumed_any || matched > 0 { matched } else { -1 };
                 }
                 if !suppress {
-                    if let Some(OutArg::Str(p)) = args.get(a).copied() {
-                        unsafe {
+                    match args.get_mut(a) {
+                        Some(OutArg::Str(p)) => unsafe {
                             for (j, &b) in buf.iter().enumerate() {
                                 *p.add(j) = b as libc::c_char;
                             }
-                        }
+                        },
+                        Some(OutArg::Buf(dst)) => dst.region_mut()[..cap].copy_from_slice(&buf),
+                        _ => {}
                     }
                     a += 1;
                     matched += 1;
@@ -903,7 +918,7 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     first = false;
                     i += 1;
                 }
-                let cap = width.unwrap_or(usize::MAX);
+                let cap = field_limit(args, a, suppress, width.unwrap_or(usize::MAX));
                 let mut buf = Vec::new();
                 while buf.len() < cap {
                     let b = match ops::read_one(state) {
@@ -931,13 +946,8 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     };
                 }
                 if !suppress {
-                    if let Some(OutArg::Str(p)) = args.get(a).copied() {
-                        unsafe {
-                            for (j, &b) in buf.iter().enumerate() {
-                                *p.add(j) = b as libc::c_char;
-                            }
-                            *p.add(buf.len()) = 0;
-                        }
+                    if store_string(state, args.get_mut(a), &mut buf).is_err() {
+                        return matched;
                     }
                     a += 1;
                     matched += 1;
@@ -991,8 +1001,8 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                 let s = unsafe { std::str::from_utf8_unchecked(&buf) };
                 let v: f64 = s.parse().unwrap_or(0.0);
                 if !suppress {
-                    if let Some(arg) = args.get(a).copied() {
-                        match arg {
+                    if let Some(arg) = args.get(a) {
+                        match *arg {
                             OutArg::Float(p) if !p.is_null() => unsafe { *p = v as f32 },
                             OutArg::Double(p) if !p.is_null() => unsafe { *p = v },
                             _ => {}
@@ -1029,9 +1039,48 @@ fn skip_ws(state: &mut State) {
     }
 }
 
-fn write_int_to_outarg(arg: OutArg, v: i64) {
+/// The most field bytes a `%s` or `%[` conversion reads. A checked
+/// destination reads one byte past what it can hold, so an overlong
+/// field is detected rather than silently split.
+fn field_limit(args: &[OutArg<'_>], a: usize, suppress: bool, width: usize) -> usize {
+    match args.get(a) {
+        Some(OutArg::Buf(dst)) if !suppress => width.min(dst.max_len().saturating_add(1)),
+        _ => width,
+    }
+}
+
+/// Stores a `%s` or `%[` field and its terminator. On overflow of a
+/// checked destination, stores the prefix that fits, pushes the one
+/// extra byte back, sets `EOVERFLOW`, and returns `Err`.
+fn store_string(state: &mut State, arg: Option<&mut OutArg<'_>>, field: &mut Vec<u8>) -> Result<(), ()> {
+    match arg {
+        Some(OutArg::Str(p)) => unsafe {
+            let p = *p;
+            for (j, &b) in field.iter().enumerate() {
+                *p.add(j) = b as libc::c_char;
+            }
+            *p.add(field.len()) = 0;
+        },
+        Some(OutArg::Buf(dst)) => {
+            if field.len() > dst.max_len() {
+                // `field_limit` read exactly one byte too many.
+                let extra = field.pop().expect("overlong field is nonempty");
+                state.pushback.push(extra);
+                state.eof = false;
+                dst.write_truncated(field);
+                errno::set(libc::EOVERFLOW);
+                return Err(());
+            }
+            dst.write_truncated(field);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn write_int_to_outarg(arg: &OutArg<'_>, v: i64) {
     unsafe {
-        match arg {
+        match *arg {
             OutArg::Int(p) if !p.is_null() => *p = v as libc::c_int,
             OutArg::Short(p) if !p.is_null() => *p = v as libc::c_short,
             OutArg::Long(p) if !p.is_null() => *p = v as libc::c_long,

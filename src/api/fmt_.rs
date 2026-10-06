@@ -4,6 +4,8 @@
 
 use std::ffi::CStr;
 
+use xj_zstr::CStrDest;
+
 use crate::errno;
 use crate::format::{run_printf, run_scanf};
 use crate::FILE_ptr;
@@ -33,22 +35,36 @@ pub fn vprintf(fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     printf(fmt, args)
 }
 
-pub fn fscanf(t: FILE_ptr, fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
+/// `fscanf`. The slice is `&mut` because [`OutArg::Buf`] borrows its
+/// destination mutably.
+pub fn fscanf(t: FILE_ptr, fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     let bytes = fmt.to_bytes();
     let r = ops::with_token(t, |s| run_scanf(s, bytes, args));
     r.unwrap_or(-1)
 }
 
-pub fn vfscanf(t: FILE_ptr, fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
+pub fn vfscanf(t: FILE_ptr, fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     fscanf(t, fmt, args)
 }
 
-pub fn scanf(fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
+pub fn scanf(fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     fscanf(crate::api::stdio_::stdin(), fmt, args)
 }
 
-pub fn vscanf(fmt: &CStr, args: &[OutArg]) -> core::ffi::c_int {
+pub fn vscanf(fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     scanf(fmt, args)
+}
+
+/// Safe sibling of `snprintf` for runtime (non-literal) formats.
+/// `dst.c_size()` plays the role of C's `n`. Writes as much of the
+/// output as fits, terminates it, and returns the full output length.
+/// Literal formats should use `xj_cfmt::csnprintf!` instead.
+pub fn snprintf_(mut dst: CStrDest<'_>, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
+    let bytes = fmt.to_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    crate::format::format_to_vec(&mut out, bytes, args);
+    dst.write_truncated(&out);
+    out.len() as libc::c_int
 }
 
 /// `sprintf`-style formatter into a caller-provided buffer.
@@ -59,13 +75,11 @@ pub fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args: &[Arg
     let mut out = Vec::with_capacity(bytes.len());
     crate::format::format_to_vec(&mut out, bytes, args);
     if !buf.is_null() && n > 0 {
-        let copy = (n as usize - 1).min(out.len());
-        unsafe {
-            for i in 0..copy {
-                *buf.add(i) = out[i] as libc::c_char;
-            }
-            *buf.add(copy) = 0;
-        }
+        // Only the bytes actually written are borrowed, so `sprintf`'s
+        // unbounded `n` never forms an oversized slice.
+        let len = n.min(out.len() + 1);
+        let region = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
+        CStrDest::from(region).write_truncated(&out);
     }
     out.len() as libc::c_int
 }

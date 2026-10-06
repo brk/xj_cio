@@ -6,6 +6,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
 use std::sync::Arc;
 
+use xj_zstr::CStrDest;
+
 use crate::buffer::BufferPolicy;
 use crate::errno;
 use crate::handle::Handle;
@@ -253,17 +255,35 @@ pub fn tmpfile() -> FILE_ptr {
     std::ptr::null()
 }
 
-pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
+/// Copies a whole generated name into `dst`, or fails with `ERANGE`
+/// without writing if it does not fit. A truncated path would name a
+/// different file.
+fn write_name(mut dst: CStrDest<'_>, name: &[u8]) -> Option<usize> {
+    if name.len() > dst.max_len() {
+        errno::set(libc::ERANGE);
+        return None;
+    }
+    Some(dst.write_truncated(name))
+}
+
+/// Safe sibling of `tmpnam` for a caller-supplied buffer. Writes a
+/// fresh temporary path into `dst` and returns its length. A
+/// destination with `c_size() >= L_tmpnam` always suffices; a smaller
+/// one fails with `ERANGE` and is left untouched, where C would
+/// overflow it.
+pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     let pid = unsafe { libc::getpid() } as u64;
-    let s = format!("/tmp/xj{:x}", (pid << 32) ^ nanos);
-    // L_tmpnam == 20; ensure it fits.
-    let bytes = s.as_bytes();
+    // Twelve hex digits keep the name within L_tmpnam - 1 == 19 bytes.
+    let s = format!("/tmp/xj{:012x}", ((pid << 32) ^ nanos) & 0xffff_ffff_ffff);
+    write_name(dst, s.as_bytes())
+}
 
+pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
     // Static buffer when the user passes NULL.
     static mut STATIC_BUF: [libc::c_char; crate::L_tmpnam] = [0; crate::L_tmpnam];
 
@@ -272,15 +292,12 @@ pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
     } else {
         buf
     };
-    let cap = crate::L_tmpnam;
-    let n = bytes.len().min(cap - 1);
-    unsafe {
-        for i in 0..n {
-            *dst.add(i) = bytes[i] as libc::c_char;
-        }
-        *dst.add(n) = 0;
+    // C requires `buf` to hold at least L_tmpnam bytes.
+    let region = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, crate::L_tmpnam) };
+    match tmpnam_(region.into()) {
+        Some(_) => dst,
+        None => std::ptr::null_mut(),
     }
-    dst
 }
 
 pub fn remove(path: &CStr) -> core::ffi::c_int {
@@ -332,20 +349,27 @@ pub fn rename(from: &CStr, to: &CStr) -> core::ffi::c_int {
     }
 }
 
+/// Safe sibling of `ctermid` for a caller-supplied buffer. Writes the
+/// controlling terminal's path into `dst` and returns its length. A
+/// destination with `c_size() >= L_ctermid` always suffices; a smaller
+/// one fails with `ERANGE` and is left untouched.
+pub fn ctermid_(dst: CStrDest<'_>) -> Option<usize> {
+    write_name(dst, b"/dev/tty")
+}
+
 pub fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
     static mut CTERMID: [libc::c_char; crate::L_ctermid] = [0; crate::L_ctermid];
-    let s = b"/dev/tty\0";
     let dst = if buf.is_null() {
         (&raw mut CTERMID) as *mut libc::c_char
     } else {
         buf
     };
-    unsafe {
-        for (i, &b) in s.iter().enumerate() {
-            *dst.add(i) = b as libc::c_char;
-        }
+    // C requires `buf` to hold at least L_ctermid bytes.
+    let region = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, crate::L_ctermid) };
+    match ctermid_(region.into()) {
+        Some(_) => dst,
+        None => std::ptr::null_mut(),
     }
-    dst
 }
 
 /// Internal helper: take ownership of a raw fd and wrap it as a stream.

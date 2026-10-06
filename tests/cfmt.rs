@@ -53,3 +53,14 @@ fn a_non_writable_stream_sets_its_error_indicator() {
     assert_eq!(fclose(stream), 0);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn zstr_arguments_use_the_byte_path() {
+    let (path, c_path) = path("zstr.txt");
+    let stream = fopen(&c_path, c"w");
+    let name = xj_zstr::ZStr::from_bytes_with_nul(b"\xffab\0hidden\0").unwrap();
+    assert_eq!(cfprintf!(stream, "[{:>5}|{:.2}]", name, name), 10);
+    assert_eq!(fclose(stream), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), b"[  \xffab|\xffa]");
+    std::fs::remove_file(path).unwrap();
+}

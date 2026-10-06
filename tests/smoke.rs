@@ -88,7 +88,7 @@ fn fscanf_two_ints_with_whitespace() {
     let r = fscanf(
         fp,
         &cstr("%d %d"),
-        &[OutArg::Int(&mut a as *mut _), OutArg::Int(&mut b as *mut _)],
+        &mut [OutArg::Int(&mut a as *mut _), OutArg::Int(&mut b as *mut _)],
     );
     assert_eq!(r, 2);
     assert_eq!(a, 12);
