@@ -66,8 +66,7 @@ impl StreamGuard {
         if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
-        let state: RefMut<'static, State> =
-            unsafe { std::mem::transmute(guard.borrow_mut()) };
+        let state: RefMut<'static, State> = unsafe { std::mem::transmute(guard.borrow_mut()) };
         Some(StreamGuard {
             state: ManuallyDrop::new(state),
             _guard: ManuallyDrop::new(guard),
@@ -83,8 +82,7 @@ impl StreamGuard {
         if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
-        let state: RefMut<'static, State> =
-            unsafe { std::mem::transmute(guard.borrow_mut()) };
+        let state: RefMut<'static, State> = unsafe { std::mem::transmute(guard.borrow_mut()) };
         Some(StreamGuard {
             state: ManuallyDrop::new(state),
             _guard: ManuallyDrop::new(guard),
@@ -256,10 +254,9 @@ impl BufRead for StreamGuard {
                 s.buffer.data.resize(n + unread, 0);
             }
             // Shift any unread buffered bytes right by n.
-            s.buffer.data.copy_within(
-                s.buffer.cursor..s.buffer.cursor + unread,
-                n,
-            );
+            s.buffer
+                .data
+                .copy_within(s.buffer.cursor..s.buffer.cursor + unread, n);
             // Drain pushback (in reverse) into [0..n].
             for (i, b) in s.pushback.drain(..).rev().enumerate() {
                 s.buffer.data[i] = b;
@@ -287,6 +284,8 @@ impl Write for StreamGuard {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let s = self.s_mut();
         if !s.mode.writable() {
+            errno::set(libc::EBADF);
+            s.err = true;
             return Err(io::Error::from_raw_os_error(libc::EBADF));
         }
         ops::write_from(s, buf)

@@ -65,9 +65,9 @@ pub fn set_stdio_mode(mode: StdioMode) {
     }
 }
 
-static STDIN_TOK: OnceLock<FILE_ptr> = OnceLock::new();
-static STDOUT_TOK: OnceLock<FILE_ptr> = OnceLock::new();
-static STDERR_TOK: OnceLock<FILE_ptr> = OnceLock::new();
+static STDIN_TOK: OnceLock<usize> = OnceLock::new();
+static STDOUT_TOK: OnceLock<usize> = OnceLock::new();
+static STDERR_TOK: OnceLock<usize> = OnceLock::new();
 
 fn make_stdio(handle: Handle, mode: OpenMode, policy: BufferPolicy) -> FILE_ptr {
     let cap = match policy {
@@ -79,13 +79,19 @@ fn make_stdio(handle: Handle, mode: OpenMode, policy: BufferPolicy) -> FILE_ptr 
 }
 
 pub fn stdin() -> FILE_ptr {
-    *STDIN_TOK.get_or_init(|| make_stdio(Handle::StdinShared, OpenMode::R, BufferPolicy::Full))
+    std::ptr::without_provenance(*STDIN_TOK.get_or_init(|| {
+        make_stdio(Handle::StdinShared, OpenMode::R, BufferPolicy::Full).addr()
+    }))
 }
 
 pub fn stdout() -> FILE_ptr {
-    *STDOUT_TOK.get_or_init(|| make_stdio(Handle::StdoutShared, OpenMode::W, BufferPolicy::Line))
+    std::ptr::without_provenance(*STDOUT_TOK.get_or_init(|| {
+        make_stdio(Handle::StdoutShared, OpenMode::W, BufferPolicy::Line).addr()
+    }))
 }
 
 pub fn stderr() -> FILE_ptr {
-    *STDERR_TOK.get_or_init(|| make_stdio(Handle::StderrShared, OpenMode::W, BufferPolicy::None))
+    std::ptr::without_provenance(*STDERR_TOK.get_or_init(|| {
+        make_stdio(Handle::StderrShared, OpenMode::W, BufferPolicy::None).addr()
+    }))
 }

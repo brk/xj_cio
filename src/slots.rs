@@ -1,10 +1,10 @@
-//! Token store: a global slotmap keyed by generational
-//! `(slot, gen)` pairs, with `Arc<FILE>` values.
+//! Token store: a global slotmap keyed by generational `(slot, gen)`
+//! pairs, with `Arc<FILE>` values.
 //!
-//! Every public stdio function decodes the caller's `FILE_ptr`, looks
-//! up the slot, clones the `Arc<FILE>`, releases the slotmap lock,
-//! and then operates on the stream. This sequence guarantees that an
-//! in-flight operation cannot be invalidated by a concurrent
+//! Every public stdio function decodes the caller's `FILE_ptr`,
+//! looks up the slot, clones the `Arc<FILE>`, releases the slotmap
+//! lock, and then operates on the stream. This sequence guarantees
+//! that an in-flight operation cannot be invalidated by a concurrent
 //! `fclose` from another thread (the `Arc` clone keeps the `FILE`
 //! alive until the operation completes).
 
@@ -43,22 +43,22 @@ fn with_read<R>(f: impl FnOnce(&SlotMap<FileKey, Arc<FILE>>) -> R) -> R {
     }
 }
 
-/// Encode a slotmap key into a `FILE_ptr`. The encoding never yields
-/// `0` because slotmap's `KeyData::as_ffi()` reserves the low bit of
-/// the version field (it's always odd), so the resulting `u64` is
-/// always non-zero.
+/// Encode a slotmap key into a `FILE_ptr`. The encoding never yields a
+/// null pointer because slotmap's `KeyData::as_ffi()` reserves the low
+/// bit of the version field (it's always odd), so the resulting `u64`
+/// is always non-zero.
 pub fn encode(k: FileKey) -> FILE_ptr {
     use slotmap::Key;
-    k.data().as_ffi() as FILE_ptr
+    std::ptr::without_provenance(k.data().as_ffi() as usize)
 }
 
 /// Decode a `FILE_ptr` into a slotmap key, or `None` if the token is
-/// the null token (`0`).
+/// the null pointer.
 pub fn decode(t: FILE_ptr) -> Option<FileKey> {
-    if t == 0 {
+    if t.is_null() {
         return None;
     }
-    Some(KeyData::from_ffi(t as u64).into())
+    Some(KeyData::from_ffi(t.addr() as u64).into())
 }
 
 /// Insert a fresh `FILE` and return its token.

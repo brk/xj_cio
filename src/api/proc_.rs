@@ -20,7 +20,7 @@ pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
         Some(b'w') => PipeDir::Write,
         _ => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
 
@@ -28,7 +28,7 @@ pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
         Ok(s) => s,
         Err(_) => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
 
@@ -39,14 +39,14 @@ pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
             Ok(c) => c,
             Err(e) => {
                 errno::set_from_io(&e);
-                return 0;
+                return std::ptr::null();
             }
         },
         PipeDir::Write => match c.stdin(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 errno::set_from_io(&e);
-                return 0;
+                return std::ptr::null();
             }
         },
     };

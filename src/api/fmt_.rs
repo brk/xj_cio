@@ -13,8 +13,11 @@ pub use crate::format::{Arg, OutArg};
 use super::ops;
 
 pub fn fprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    let bytes = fmt.to_bytes();
-    let r = ops::with_token(t, |s| run_printf(s, bytes, args));
+    fprintfb(t, fmt.to_bytes(), args)
+}
+
+pub fn fprintfb(t: FILE_ptr, fmt_bytes: &[u8], args: &[Arg]) -> core::ffi::c_int {
+    let r = ops::with_token(t, |s| run_printf(s, fmt_bytes, args));
     r.unwrap_or(-1)
 }
 

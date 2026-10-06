@@ -58,21 +58,21 @@ pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr {
         Some(m) => m,
         None => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
     let p = match cstr_to_path(path) {
         Some(p) => p,
         None => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
     let f = match open_file_for(m, p) {
         Ok(f) => f,
         Err(e) => {
             errno::set_from_io(&e);
-            return 0;
+            return std::ptr::null();
         }
     };
     let state = State::new(Handle::Regular(f), m, BufferPolicy::Full, BUFSIZ);
@@ -124,20 +124,21 @@ pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
 
 /// Safe sibling of `freopen`. `path = None` corresponds to
 /// `freopen(NULL, mode, fp)` (mode-change on the existing handle,
-/// which we don't support — returns 0 with `errno = EINVAL`).
+/// which we don't support — returns a null handle with
+/// `errno = EINVAL`).
 pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
     let arc = match slots::lookup(t) {
         Some(a) => a,
         None => {
             errno::set(libc::EBADF);
-            return 0;
+            return std::ptr::null();
         }
     };
     let m = match OpenMode::parse(mode.to_bytes()) {
         Some(m) => m,
         None => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
     let res: Result<(), libc::c_int> = arc.with_state(|s| {
@@ -173,7 +174,7 @@ pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
         Ok(()) => t,
         Err(e) => {
             errno::set(e);
-            0
+            std::ptr::null()
         }
     }
 }
@@ -192,18 +193,18 @@ pub fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {
         Some(m) => m,
         None => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
     if fd < 0 {
         errno::set(libc::EBADF);
-        return 0;
+        return std::ptr::null();
     }
     // Dup so that our Drop doesn't close the caller's fd.
     let dup = unsafe { libc::dup(fd) };
     if dup < 0 {
         errno::set_from_io(&std::io::Error::last_os_error());
-        return 0;
+        return std::ptr::null();
     }
     let f = unsafe { File::from_raw_fd(dup) };
     let state = State::new(Handle::Regular(f), m, BufferPolicy::Full, BUFSIZ);
@@ -244,12 +245,12 @@ pub fn tmpfile() -> FILE_ptr {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 errno::set_from_io(&e);
-                return 0;
+                return std::ptr::null();
             }
         }
     }
     errno::set(libc::EEXIST);
-    0
+    std::ptr::null()
 }
 
 pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {

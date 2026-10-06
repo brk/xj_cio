@@ -30,10 +30,10 @@ A faithful, mostly-safe Rust re-implementation of C's `<stdio.h>`, designed as a
 ┌──────────────────────────────────────────────────────────────────┐
 │   Public C-style API:  fopen, fread, fprintf, ferror, ...        │
 ├──────────────────────────────────────────────────────────────────┤
-│   FILE_ptr = opaque token (usize) issued by the slotmap          │
+│   FILE_ptr = opaque `*const _File` handle issued by the slotmap  │
 ├──────────────────────────────────────────────────────────────────┤
-│   Slotmap<FILE_ptr, Arc<FILE>>                                   │
-│     ├─ Generational keys: stale tokens reject deterministically  │
+│   Slotmap<FileKey, Arc<FILE>>                                    │
+│     ├─ Generational keys: stale handles reject deterministically │
 │     ├─ Arc clone on lookup: in-flight ops survive concurrent close│
 │     └─ Doubles as the registry for fflush(NULL) and atexit       │
 ├──────────────────────────────────────────────────────────────────┤
@@ -75,10 +75,11 @@ The architecture is strictly layered. Each public function is a thin adapter tha
 
 ### 3.2 Naming
 
-Functions live in a `xj_cio` crate and are named identically to their POSIX counterparts. The `FILE_ptr` type is an opaque token (a `usize`), not a pointer:
+Functions live in a `xj_cio` crate and are named identically to their POSIX counterparts. The `FILE_ptr` type is an opaque pointer-typed handle:
 
 ```rust
-pub type FILE_ptr = usize;     // 0 means "no file" (replaces NULL)
+pub enum _File {}
+pub type FILE_ptr = *const _File;     // null means "no file" (replaces NULL)
 
 pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr;
 pub fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
@@ -86,15 +87,15 @@ pub fn ferror(f: FILE_ptr) -> c_int;
 // ...
 ```
 
-The token-based signatures are chosen over Rust-native (`&mut Stream`) ones to keep mechanical translation textually trivial: every C `FILE *f` becomes a Rust `f: FILE_ptr`, and every `f == NULL` test becomes `f == 0`.
+The handle-based signatures are chosen over Rust-native (`&mut Stream`) ones to keep mechanical translation close to the original source: every C `FILE *f` becomes a Rust `f: FILE_ptr`, and every `f == NULL` test becomes `f.is_null()`.
 
-The choice of `usize` (rather than `*mut FILE`) is fundamental to the safety story (§7): the translated C code never receives an address into our data structures, so it cannot corrupt our state by writing through the value. See §4.3.
+The choice of `*const _File` is still compatible with the safety story (§7): although the handle is pointer-typed, it is not a real pointer into our data structures. The `_File` type is just an opaque placeholder, and the pointer bits are synthesized from slotmap keys rather than borrowed from a live `FILE` allocation. See §4.3.
 
 ### 3.3 Error model
 
 - Every function sets a thread-local `errno` (mirrored to the platform `errno` on platforms where that's safe and zero-cost; otherwise our own `thread_local!`).
 - Every function also sets the per-stream `error` indicator on failure (or `eof` if EOF was the cause), exactly as libc does.
-- Return values match POSIX (e.g., `fopen` returns `0` (the null token) on failure, `fread` returns the short count, `fseek` returns -1 on failure).
+- Return values match POSIX (e.g., `fopen` returns a null handle on failure, `fread` returns the short count, `fseek` returns -1 on failure).
 - Functions that receive an invalid `FILE_ptr` (one that was never issued, or whose slot has been freed and possibly reissued with a different generation) set `errno = EBADF` and return the appropriate failure value. They do not touch any stream state.
 
 ---
@@ -159,9 +160,9 @@ enum BufferPolicy {
 
 Read- and write-buffering share the same `Vec` because at any moment a stream is in exactly one direction (`last_op`); the buffer is fully drained on direction change.
 
-### 4.3 The token store
+### 4.3 The handle store
 
-The translated C code never receives a pointer into our data structures. Instead, every `FILE_ptr` is an opaque `usize` issued by a global, generational slotmap:
+The translated C code never receives a pointer into our data structures. Instead, every `FILE_ptr` is an opaque `*const _File` synthesized from a global, generational slotmap key:
 
 ```rust
 use slotmap::{SlotMap, KeyData};
@@ -171,17 +172,17 @@ slotmap::new_key_type! { struct FileKey; }
 static SLOTS: Lazy<RwLock<SlotMap<FileKey, Arc<FILE>>>> = ...;
 
 fn encode(k: FileKey) -> FILE_ptr {
-    let raw: u64 = k.data().as_ffi();    // packs (slot_idx, generation)
-    raw as usize                          // 0 cannot be produced — see slotmap docs
+    let raw: usize = k.data().as_ffi() as usize;    // packs (slot_idx, generation)
+    std::ptr::without_provenance(raw)               // null cannot be produced — see slotmap docs
 }
 
 fn decode(t: FILE_ptr) -> Option<FileKey> {
-    if t == 0 { return None; }
-    Some(FileKey::from(KeyData::from_ffi(t as u64)))
+    if t.is_null() { return None; }
+    Some(FileKey::from(KeyData::from_ffi(t.addr() as u64)))
 }
 ```
 
-Slotmap keys carry a generation counter alongside the slot index. Removing a slot bumps its generation; reusing the slot for a later `fopen` produces a *different* token. Stale tokens — whether held as aliases of closed streams, fabricated from arbitrary integers, or copied from a previous run — fail the generation check on lookup and produce `EBADF`.
+Slotmap keys carry a generation counter alongside the slot index. Removing a slot bumps its generation; reusing the slot for a later `fopen` produces a *different* handle. Stale handles — whether held as aliases of closed streams, fabricated from arbitrary pointer values, or copied from a previous run — fail the generation check on lookup and produce `EBADF`.
 
 `fopen` and friends do:
 
@@ -189,7 +190,7 @@ Slotmap keys carry a generation counter alongside the slot index. Removing a slo
 pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr {
     let f = match FILE::new(path, mode) {
         Ok(f) => f,
-        Err(e) => { errno::set(e); return 0; }
+        Err(e) => { errno::set(e); return std::ptr::null(); }
     };
     let key = SLOTS.write().insert(Arc::new(f));
     encode(key)
@@ -218,7 +219,7 @@ pub fn fclose(t: FILE_ptr) -> c_int {
 }
 ```
 
-Every other operation looks up the token, clones the `Arc` while holding the slotmap lock briefly, releases the slotmap lock, then operates on the `Arc<FILE>`:
+Every other operation looks up the handle, clones the `Arc` while holding the slotmap lock briefly, releases the slotmap lock, then operates on the `Arc<FILE>`:
 
 ```rust
 fn lookup(t: FILE_ptr) -> Option<Arc<FILE>> {
@@ -242,7 +243,7 @@ pub fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
 
 1. **Bounded memory.** `fclose` actually reclaims storage. Memory usage is `O(currently-open streams)`, not `O(total fopens)`. Long-running daemons don't grow without bound.
 2. **Concurrent close.** An in-flight `fread` cannot be invalidated by another thread's `fclose`, because the in-flight op holds an `Arc` clone. The OS resource is released exactly when the last in-flight op completes.
-3. **Defense against pointer corruption.** The translated code holds only an opaque `usize`. It has no address through which to scribble on our `State`, our `ReentrantMutex`, our `Arc` refcount, or anything else internal. A malicious or buggy `memset(f, 0, ...)` cannot compile — there is no `f` to dereference and no `sizeof(FILE)` to publish — and a fabricated `FILE_ptr` value is rejected at the slotmap lookup. See §7 for the full safety analysis.
+3. **Defense against pointer corruption.** The translated code holds only an opaque `*const _File` handle. That handle is not a real pointer to our `State`, our `ReentrantMutex`, our `Arc` refcount, or anything else internal: the bits come from `slotmap::KeyData`, not from a dereferenceable allocation. A malicious or buggy `memset` can overwrite the handle variable itself, but the next call only sees a different synthesized handle and rejects it at slotmap lookup unless it accidentally matches a currently-live key. See §7 for the full safety analysis.
 
 The cost is one `RwLock::read` and one `Arc::clone` per public call, on the order of 20–50ns. Negligible against any operation that touches the kernel; potentially measurable on hot character I/O (`getc` in a tight loop), where it can be amortized via `flockfile`-bracketed sequences that batch many operations under a single lookup.
 
@@ -304,7 +305,7 @@ For unseekable handles (`Pipe`, some `Stdio` cases), `ftell` returns -1 and sets
 
 ### 5.4 freopen
 
-`freopen(path, mode, t)` keeps the same token `t` valid (so caller-held aliases continue to work) and:
+`freopen(path, mode, t)` keeps the same handle `t` valid (so caller-held aliases continue to work) and:
 
 1. Looks up `t` in the slotmap; aborts with `EBADF` if invalid.
 2. Acquires the stream lock.
@@ -312,9 +313,9 @@ For unseekable handles (`Pipe`, some `Stdio` cases), `ftell` returns -1 and sets
 4. Opens the new path.
 5. Replaces `state.handle`, resets `buffer`, `pushback`, indicators, `mode`, `last_op`.
 
-Note that the slot is *not* removed and reissued — the same `FILE` (and the same `Arc`) is reused with new internal state. This preserves token equality (`t1 == t2` if they were the same before, still are afterward), matching libc's pointer-identity guarantee.
+Note that the slot is *not* removed and reissued — the same `FILE` (and the same `Arc`) is reused with new internal state. This preserves handle equality (`t1 == t2` if they were the same before, still are afterward), matching libc's pointer-identity guarantee.
 
-Special case: `freopen(NULL, mode, t)` changes the mode of the existing handle (POSIX 2008+). For regular files this is implementable via `fcntl(F_SETFL)`; for stdio shares we degrade gracefully (return `0`, set errno).
+Special case: `freopen(NULL, mode, t)` changes the mode of the existing handle (POSIX 2008+). For regular files this is implementable via `fcntl(F_SETFL)`; for stdio shares we degrade gracefully (return a null handle, set errno).
 
 ### 5.5 Indicator semantics
 
@@ -350,22 +351,22 @@ Every public function internally takes the lock for its duration. If `flockfile`
 
 ### 6.1 The principle
 
-For the three standard origins, `Handle` defaults to wrapping the corresponding `std::io::Std*` handle rather than a raw fd. The singletons are tokens, lazily registered into the slotmap on first access:
+For the three standard origins, `Handle` defaults to wrapping the corresponding `std::io::Std*` handle rather than a raw fd. The singletons are handles, lazily registered into the slotmap on first access:
 
 ```rust
-fn stdout_token() -> FILE_ptr {
-    static T: OnceLock<FILE_ptr> = OnceLock::new();
-    *T.get_or_init(|| {
+fn stdout_handle() -> FILE_ptr {
+    static T: OnceLock<usize> = OnceLock::new();
+    std::ptr::without_provenance(*T.get_or_init(|| {
         let f = FILE::new_stdio_shared(
             Handle::StdoutShared(std::io::stdout()),
             BufferPolicy::Line(BUFSIZ),    // libc default for terminals
         );
-        encode(SLOTS.write().insert(Arc::new(f)))
-    })
+        encode(SLOTS.write().insert(Arc::new(f))).addr()
+    }))
 }
 ```
 
-Because the token is registered in the slotmap, the standard streams participate in `fflush(NULL)` and atexit flushing the same way regular files do. They are never `fclose`d implicitly, so their slot lives for the program's lifetime.
+Because the handle is registered in the slotmap, the standard streams participate in `fflush(NULL)` and atexit flushing the same way regular files do. They are never `fclose`d implicitly, so their slot lives for the program's lifetime.
 
 Writes through `our_fwrite(our_stdout, ...)` proceed as:
 
@@ -415,7 +416,7 @@ The library's `unsafe` blocks are confined to the following sites:
 3. **C-variadic implementations of `vfprintf`/`vfscanf`**: walking a `VaList` is `unsafe` regardless of context. Encapsulated in the format engine.
 4. **Pointer-typed I/O buffers**: `fread`/`fwrite` take `*mut u8`/`*const u8` and a length; these dereferences are `unsafe` and rely on the caller's contract that the buffer is valid for the given length, exactly as libc requires.
 
-Notably absent from this list: anything to do with `FILE_ptr` itself. Token decode and slotmap lookup are entirely safe Rust. The translated code never has access to a pointer into our state.
+Notably absent from this list: anything to do with `FILE_ptr` itself. Handle encode/decode and slotmap lookup are entirely safe Rust (`ptr::without_provenance` and `.addr()`), and the translated code never has access to a real pointer into our state.
 
 Total unsafe LOC is expected to be under 200 lines, each with a SAFETY comment citing the invariant.
 
@@ -423,14 +424,14 @@ Total unsafe LOC is expected to be under 200 lines, each with a SAFETY comment c
 
 Three categories of misbehavior from the translated program:
 
-1. **Fabricated tokens.** The C code synthesizes a `FILE_ptr` from an arbitrary integer, a previous program run, or a stale alias of a closed stream.
+1. **Fabricated handles.** The C code synthesizes a `FILE_ptr` from an arbitrary integer/pointer bit-pattern, a previous program run, or a stale alias of a closed stream.
 2. **In-place mutation of `FILE` state.** The C code attempts to overwrite the bytes of a `FILE` struct directly, e.g. `memset(f, 0, sizeof(FILE))`.
 3. **Misuse of the safe API.** Closing twice, reading from a write-only stream, passing a buffer of the wrong length, etc.
 
 ### 7.3 What the design rules out
 
-- **(1) is fully caught.** Every entry point begins with a slotmap decode + lookup. Tokens that were never issued, or whose generation is stale because the slot has been freed (and possibly reissued), produce `EBADF` deterministically. No state is touched, no pointer is dereferenced, no UB.
-- **(2) is impossible by construction.** The translated code holds opaque `usize` tokens. There is no address it can write through to reach our `Arc<FILE>`, `ReentrantMutex`, `State`, buffer, or anything else. The library does not export `sizeof(FILE)`, does not give out the layout of `FILE`, and does not provide any function that returns a `*mut FILE`. A C-side `memset` on a `FILE_ptr` value treats it as a `usize` — it scribbles on the integer, the next call simply produces `EBADF`.
+- **(1) is fully caught.** Every entry point begins with a slotmap decode + lookup. Handles that were never issued, or whose generation is stale because the slot has been freed (and possibly reissued), produce `EBADF` deterministically. No state is touched, no real pointer is dereferenced, no UB.
+- **(2) is impossible by construction.** The translated code holds opaque `*const _File` handles, but they are not pointers to an exposed `_File` object or to any live internal allocation. The library does not export the layout of `_File` or `FILE`, does not provide `sizeof(FILE)`, and does not return pointers to its internal `Arc<FILE>` / `State`. A C-side `memset` or integer cast on a `FILE_ptr` only scribbles on the handle bits; the next call simply produces `EBADF` unless those bits happen to name a currently-live slot key.
 - **(3) produces defined error returns**, never UB. Closing twice: the second `fclose` finds an empty slot. Reading from a write-only stream: the `OpenMode` check fails inside the safe Rust state machine. Wrong buffer length: that's the caller's contract on the `*mut u8`, same as libc.
 
 Stronger stated: **a program that calls only the safe entry points, with valid `*mut u8` buffers, cannot trigger UB through this library.** The remaining unsafe entry points (`fdopen`, the variadic format functions) are the inherent FFI boundary; the translator marks them with `unsafe` blocks at the call site, and the translation still localizes the unsafety to those few sites instead of dispersing it across every stdio call.
@@ -440,7 +441,7 @@ Stronger stated: **a program that calls only the safe entry points, with valid `
 - **Logic errors** in the translated program produce defined error returns rather than UB, but the program is still buggy. Tools like static analysis or runtime tracing can find these; the library itself just refuses to misbehave.
 - **`fdopen` and variadic format** require `unsafe` at the call site; the translator emits these with `unsafe` blocks. A garbage fd or a malformed `va_list` is UB and not detectable by the library.
 - **Filesystem-level races** (TOCTOU on the path passed to `fopen`) are inherent to the OS and not addressable here.
-- **Slow `fclose` followed by `fopen` reusing the slot** can in principle produce a "false-positive valid token": if a stale alias's encoded `(slot, gen)` value happens to match a *future* `(slot, gen)` after wraparound of the 32-bit generation counter, lookup would succeed and the operation would target the wrong stream. Slotmap uses a 32-bit generation field; for wraparound to occur, the same slot must be `fclose`d and `fopen`d 2³² times. This is not a practical concern, but is documented for completeness and can be hardened by widening the generation field if a concrete adversary model demands it.
+- **Slow `fclose` followed by `fopen` reusing the slot** can in principle produce a "false-positive valid handle": if a stale alias's encoded `(slot, gen)` value happens to match a *future* `(slot, gen)` after wraparound of the 32-bit generation counter, lookup would succeed and the operation would target the wrong stream. Slotmap uses a 32-bit generation field; for wraparound to occur, the same slot must be `fclose`d and `fopen`d 2³² times. This is not a practical concern, but is documented for completeness and can be hardened by widening the generation field if a concrete adversary model demands it.
 
 ---
 

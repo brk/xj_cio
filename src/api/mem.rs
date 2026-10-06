@@ -42,13 +42,13 @@ fn open_mem(storage: MemStorage, mode: &CStr) -> FILE_ptr {
     };
     if capacity == 0 {
         errno::set(libc::EINVAL);
-        return 0;
+        return std::ptr::null();
     }
     let (mm, om) = match parse_mem_mode(mode) {
         Some(p) => p,
         None => {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
     };
 
@@ -84,8 +84,8 @@ fn open_mem(storage: MemStorage, mode: &CStr) -> FILE_ptr {
 }
 
 /// Safe equivalent of `fmemopen` over an owned buffer. The stream
-/// takes ownership of `buf`; its capacity is `buf.len()`. Returns 0
-/// (with `errno`) on invalid mode or empty buffer.
+/// takes ownership of `buf`; its capacity is `buf.len()`. Returns a
+/// null handle (with `errno`) on invalid mode or empty buffer.
 pub fn fmemopen_(buf: Vec<u8>, mode: &CStr) -> FILE_ptr {
     open_mem(MemStorage::Owned(buf), mode)
 }
@@ -94,7 +94,7 @@ pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE
     if buf.is_null() {
         if size == 0 {
             errno::set(libc::EINVAL);
-            return 0;
+            return std::ptr::null();
         }
         return fmemopen_(vec![0u8; size], mode);
     }
@@ -107,9 +107,9 @@ pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE
     )
 }
 
-/// `open_memstream(*bufp, *sizep)` is not implemented in v1; returns
-/// 0 with `errno = ENOSYS`.
+/// `open_memstream(*bufp, *sizep)` is not implemented in v1; returns a
+/// null handle with `errno = ENOSYS`.
 pub fn open_memstream(_bufp: *mut *mut libc::c_char, _sizep: *mut libc::size_t) -> FILE_ptr {
     errno::set(libc::ENOSYS);
-    0
+    std::ptr::null()
 }

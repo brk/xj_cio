@@ -2,8 +2,9 @@
 //!
 //! The functions in this module are the translation target for
 //! mechanically-rewritten C code. Naming and argument order match
-//! POSIX 2024; only `FILE *` becomes `FILE_ptr` and variadic-style
-//! input becomes a slice of `Arg` / `OutArg`.
+//! POSIX 2024; only `FILE *` becomes `FILE_ptr` (a `*const _File`
+//! alias) and variadic-style input becomes a slice of `Arg` /
+//! `OutArg`.
 
 pub(crate) mod ops;
 

@@ -14,14 +14,14 @@ fn fopen_fwrite_fclose_fopen_fread_roundtrip() {
     let p = cstr(path.to_str().unwrap());
 
     let fp = fopen(&p, &cstr("wb"));
-    assert_ne!(fp, 0);
+    assert!(!fp.is_null());
     let data = b"hello world";
     let n = fwrite(data.as_ptr(), 1, data.len(), fp);
     assert_eq!(n, data.len());
     assert_eq!(fclose(fp), 0);
 
     let fp = fopen(&p, &cstr("rb"));
-    assert_ne!(fp, 0);
+    assert!(!fp.is_null());
     let mut buf = [0u8; 32];
     let n = fread(buf.as_mut_ptr(), 1, buf.len(), fp);
     assert_eq!(n, data.len());
@@ -99,9 +99,27 @@ fn fscanf_two_ints_with_whitespace() {
 
 #[test]
 fn invalid_token_returns_ebadf() {
-    let bad = 0x12345678usize;
+    let bad: FILE_ptr = std::ptr::without_provenance(0x12345678usize);
     assert_eq!(fclose(bad), EOF);
     assert_eq!(errno::get(), libc::EBADF);
+}
+
+#[test]
+fn stale_token_returns_ebadf_after_reopen() {
+    let path = std::env::temp_dir().join("xj_cio_stale_token.txt");
+    let p = cstr(path.to_str().unwrap());
+
+    let stale = fopen(&p, &cstr("wb"));
+    assert!(!stale.is_null());
+    assert_eq!(fclose(stale), 0);
+
+    let fresh = fopen(&p, &cstr("wb"));
+    assert!(!fresh.is_null());
+    assert_eq!(fclose(stale), EOF);
+    assert_eq!(errno::get(), libc::EBADF);
+    assert_eq!(fclose(fresh), 0);
+
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -128,7 +146,7 @@ fn fseek_ftell_roundtrip() {
 fn fmemopen_write_roundtrip() {
     let mut buf = [b'#'; 16];
     let fp = fmemopen(buf.as_mut_ptr() as *mut _, buf.len(), &cstr("w"));
-    assert_ne!(fp, 0);
+    assert!(!fp.is_null());
     let cs = cstr("hi");
     fputs(&cs, fp);
     fclose(fp);
@@ -217,7 +235,7 @@ fn stream_guard_pushback_appears_in_fill_buf() {
 
 #[test]
 fn stream_guard_invalid_token_sets_ebadf() {
-    let bad = 0x12345678usize;
+    let bad: FILE_ptr = std::ptr::without_provenance(0x12345678usize);
     assert!(stream_lock(bad).is_none());
     assert_eq!(errno::get(), libc::EBADF);
 }
@@ -250,7 +268,7 @@ fn fclose_while_holding_stream_guard_does_not_panic() {
     drop(g);
 
     let fp2 = fopen(&p, &cstr("rb"));
-    assert_ne!(fp2, 0);
+    assert!(!fp2.is_null());
     let mut buf = [0u8; 16];
     let n = fread(buf.as_mut_ptr(), 1, buf.len(), fp2);
     assert_eq!(&buf[..n], b"hello");

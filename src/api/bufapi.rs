@@ -10,10 +10,10 @@ use crate::{BUFSIZ, EOF, FILE_ptr, _IOFBF, _IOLBF, _IONBF};
 use super::ops;
 use super::stdio_::{stdio_mode, StdioMode};
 
-/// `fflush(fp)` — drains the write buffer to the kernel. `fp == 0`
+/// `fflush(fp)` — drains the write buffer to the kernel. A null `fp`
 /// flushes every open writable stream.
 pub fn fflush(t: FILE_ptr) -> core::ffi::c_int {
-    if t == 0 {
+    if t.is_null() {
         return fflush_all();
     }
     let r = ops::with_token(t, |s| match ops::flush_internal(s) {

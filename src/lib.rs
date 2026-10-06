@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod errno;
+mod atexit;
 mod buffer;
 mod handle;
 mod state;
@@ -24,11 +25,18 @@ pub mod capture;
 pub use api::*;
 pub use print::{_eprint, _eprintln, _print, _println};
 
-/// Opaque token representing a stream. `0` is the null token.
+/// Opaque placeholder for translated `FILE *` handles.
 ///
-/// Internally a `usize`-encoded slotmap key (slot index + generation).
-/// Translated C code that compares `f == NULL` becomes `f == 0`.
-pub type FILE_ptr = usize;
+/// `FILE_ptr` values are never dereferenced as `_File`; their address
+/// bits encode slotmap keys.
+pub enum _File {}
+
+/// Opaque handle representing a stream. A null pointer means "no
+/// file".
+///
+/// Internally the pointer address stores a slotmap key (slot index +
+/// generation).
+pub type FILE_ptr = *const _File;
 
 /// Default buffer size, exposed for callers translating `BUFSIZ`.
 pub const BUFSIZ: usize = 8192;
