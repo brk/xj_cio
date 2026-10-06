@@ -789,7 +789,11 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     }
                 }
                 if buf.is_empty() || (buf.len() == 1 && (buf[0] == b'-' || buf[0] == b'+')) {
-                    return if consumed_any || matched > 0 { matched } else { -1 };
+                    return if buf.is_empty() && state.eof && !consumed_any && matched == 0 {
+                        -1
+                    } else {
+                        matched
+                    };
                 }
                 let s = unsafe { std::str::from_utf8_unchecked(&buf) };
                 let parsed: i64 = match conv {
@@ -878,12 +882,24 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                 }
                 let mut set = [false; 256];
                 let mut first = true;
+                let mut previous = None;
                 while let Some(c) = fmt.get(i).copied() {
                     if c == b']' && !first {
                         i += 1;
                         break;
                     }
+                    if c == b'-' && !first {
+                        if let (Some(start), Some(end)) = (previous, fmt.get(i + 1).copied()) {
+                            if end != b']' && start <= end {
+                                set[start as usize..=end as usize].fill(true);
+                                previous = Some(end);
+                                i += 2;
+                                continue;
+                            }
+                        }
+                    }
                     set[c as usize] = true;
+                    previous = Some(c);
                     first = false;
                     i += 1;
                 }
@@ -906,7 +922,13 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &[OutArg]) -> core::ffi::c
                     }
                 }
                 if buf.is_empty() {
-                    return if consumed_any || matched > 0 { matched } else { -1 };
+                    // A nonmatching byte is a matching failure, not EOF. It
+                    // remains unread, and previous destinations stay intact.
+                    return if state.eof && !consumed_any && matched == 0 {
+                        -1
+                    } else {
+                        matched
+                    };
                 }
                 if !suppress {
                     if let Some(OutArg::Str(p)) = args.get(a).copied() {

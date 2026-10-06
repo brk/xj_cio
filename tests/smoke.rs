@@ -154,6 +154,114 @@ fn fscanf_unsigned_signs_match_libc() {
 }
 
 #[test]
+fn fscanf_scanset_ranges_match_libc() {
+    for (input, format) in [
+        ("UA129089 TP579!", "%8[A-Z0-9]"),
+        ("abc123!", "%[a-z0-9]"),
+        ("ABC-!", "%[A-Z-]"),
+        ("-+AZ!", "%[-+A-Z]"),
+        ("]ABC!", "%[]A-C]"),
+        ("AZ-!", "%[Z-A]"),
+        ("ABCDE!", "%3[A-Z]"),
+        ("123Abc!", "%*[0-9]%[A-Za-z]"),
+        ("comments 42!", "%[^A-Z0-9]"),
+        ("\nremaining", "%80[^\n]"),
+        ("lowercase", "%[A-Z]"),
+        ("", "%[A-Z]"),
+    ] {
+        let input = cstr(input);
+        let native_format = cstr(&format!("{format}%n"));
+        let format = cstr(format);
+        let mut expected = [0u8; 128];
+        let mut consumed: libc::c_int = 0;
+        let matched = unsafe {
+            libc::sscanf(
+                input.as_ptr(),
+                native_format.as_ptr(),
+                expected.as_mut_ptr().cast::<libc::c_char>(),
+                &mut consumed as *mut _,
+            )
+        };
+        let stream = tmpfile();
+        assert!(!stream.is_null());
+        assert_eq!(
+            fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+            input.as_bytes().len()
+        );
+        rewind(stream);
+        let mut actual = [0u8; 128];
+        assert_eq!(
+            fscanf(
+                stream,
+                &format,
+                &mut [OutArg::Str(actual.as_mut_ptr().cast())]
+            ),
+            matched
+        );
+        assert_eq!(actual, expected, "input {input:?}, format {format:?}");
+        assert_eq!(
+            fgetc(stream),
+            input
+                .as_bytes()
+                .get(consumed as usize)
+                .map_or(EOF, |b| *b as libc::c_int)
+        );
+        assert_eq!(fclose(stream), 0);
+    }
+}
+
+#[test]
+fn fscanf_numeric_matching_failure_matches_libc() {
+    for (input, format) in [
+        ("flight, but to go to Porto.", "%d"),
+        ("", "%d"),
+        ("-", "%d"),
+        ("+rest", "%d"),
+        ("12 flight,", "%d %d"),
+        ("12", "%d %d"),
+    ] {
+        let input = cstr(input);
+        let format = cstr(format);
+        let mut expected = [37 as libc::c_int, 43];
+        let (matched, next) = unsafe {
+            let stream = libc::tmpfile();
+            assert!(!stream.is_null());
+            assert_eq!(
+                libc::fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+                input.as_bytes().len()
+            );
+            libc::rewind(stream);
+            let matched = libc::fscanf(
+                stream,
+                format.as_ptr(),
+                &mut expected[0] as *mut _,
+                &mut expected[1] as *mut _,
+            );
+            let next = libc::fgetc(stream);
+            assert_eq!(libc::fclose(stream), 0);
+            (matched, next)
+        };
+        let stream = tmpfile();
+        assert!(!stream.is_null());
+        assert_eq!(
+            fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+            input.as_bytes().len()
+        );
+        rewind(stream);
+        let mut actual = [37 as libc::c_int, 43];
+        let [a, b] = &mut actual;
+        assert_eq!(
+            fscanf(stream, &format, &mut [OutArg::Int(a), OutArg::Int(b)]),
+            matched,
+            "input {input:?}"
+        );
+        assert_eq!(actual, expected, "input {input:?}");
+        assert_eq!(fgetc(stream), next, "input {input:?}");
+        assert_eq!(fclose(stream), 0);
+    }
+}
+
+#[test]
 fn stale_token_returns_ebadf_after_reopen() {
     let path = std::env::temp_dir().join("xj_cio_stale_token.txt");
     let p = cstr(path.to_str().unwrap());
