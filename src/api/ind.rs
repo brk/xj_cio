@@ -35,10 +35,17 @@ pub fn perror_(prefix: Option<&CStr>) {
                 let _ = ops::write_from(s, b": ");
             }
         }
-        // strerror(saved) — call libc directly.
-        let msg = unsafe { libc::strerror(saved) };
-        if !msg.is_null() {
-            let cstr = unsafe { CStr::from_ptr(msg) };
+        // `strerror_r` rather than `strerror`: the latter may return a
+        // static buffer that another thread can overwrite while we
+        // read it.
+        // Even when it reports an unknown `errno` (glibc writes
+        // "Unknown error N" and returns `EINVAL`), the buffer is
+        // NUL-terminated, so print whatever it holds.
+        let mut msg = [0u8; 128];
+        // SAFETY: `msg` is valid for writes of `msg.len()` bytes, and
+        // `strerror_r` writes no more than that.
+        let _ = unsafe { libc::strerror_r(saved, msg.as_mut_ptr().cast(), msg.len()) };
+        if let Ok(cstr) = CStr::from_bytes_until_nul(&msg) {
             let _ = ops::write_from(s, cstr.to_bytes());
         }
         let _ = ops::write_from(s, b"\n");
@@ -47,10 +54,18 @@ pub fn perror_(prefix: Option<&CStr>) {
 }
 
 /// `perror(prefix)` writes "<prefix>: <strerror(errno)>\n" to stderr.
-pub fn perror(prefix: *const libc::c_char) {
+///
+/// # Safety
+///
+/// `prefix` must be null or point to a NUL-terminated string that is
+/// valid for reads up to and including its NUL and is not modified
+/// during the call.
+pub unsafe fn perror(prefix: *const libc::c_char) {
     let p = if prefix.is_null() {
         None
     } else {
+        // SAFETY: non-null, so the caller guarantees a valid,
+        // unmodified NUL-terminated string.
         Some(unsafe { CStr::from_ptr(prefix) })
     };
     perror_(p);

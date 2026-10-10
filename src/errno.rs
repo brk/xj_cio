@@ -26,6 +26,9 @@ pub fn get() -> core::ffi::c_int {
 /// `errno` directly sees the same value.
 pub fn set(e: libc::c_int) {
     ERRNO.with(|c| c.set(e));
+    // SAFETY: `__errno_location` always returns a valid, aligned
+    // pointer to the calling thread's `errno`, which only this thread
+    // accesses.
     unsafe {
         *libc::__errno_location() = e;
     }

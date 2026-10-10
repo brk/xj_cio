@@ -3,6 +3,11 @@ use std::sync::Once;
 static REGISTER_FLUSH_AT_EXIT: Once = Once::new();
 
 pub fn ensure_registered() {
+    // SAFETY: `atexit` only records the function pointer. The handler
+    // is an `extern "C" fn()` with the signature libc expects, it never
+    // unwinds into libc (its body runs under `catch_unwind`), and it
+    // touches only `'static` state (the slotmap and the `Arc<FILE>`s it
+    // holds), so it stays valid whenever `exit` runs it.
     REGISTER_FLUSH_AT_EXIT.call_once(|| unsafe {
         let _ = libc::atexit(flush_open_streams);
     });

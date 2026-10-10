@@ -29,7 +29,13 @@ pub fn fread_(dst: &mut [u8], t: FILE_ptr) -> usize {
 
 /// `fread(buf, size, n, fp)`. Returns the number of *complete items*
 /// actually read (i.e. `bytes_read / size`). Sets `eof`/`err`.
-pub fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
+///
+/// # Safety
+///
+/// If `size * n` is nonzero and does not overflow, `buf` must be valid
+/// for reads and writes of `size * n` bytes, all initialized, and not
+/// accessed through any other pointer or reference during the call.
+pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
     if size == 0 || n == 0 {
         return 0;
     }
@@ -40,6 +46,8 @@ pub fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
             return 0;
         }
     };
+    // SAFETY: `total` is nonzero, so the caller guarantees `total`
+    // initialized bytes at `buf`, exclusively ours for this call.
     let dst = unsafe { std::slice::from_raw_parts_mut(buf, total) };
     fread_(dst, t) / size
 }
@@ -66,7 +74,13 @@ pub fn fwrite_(src: &[u8], t: FILE_ptr) -> usize {
 
 /// `fwrite(buf, size, n, fp)`. Returns the number of complete items
 /// actually written.
-pub fn fwrite(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
+///
+/// # Safety
+///
+/// If `size * n` is nonzero and does not overflow, `buf` must be valid
+/// for reads of `size * n` initialized bytes, which must not be
+/// written through any other pointer during the call.
+pub unsafe fn fwrite(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
     if size == 0 || n == 0 {
         return 0;
     }
@@ -77,6 +91,8 @@ pub fn fwrite(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
             return 0;
         }
     };
+    // SAFETY: `total` is nonzero, so the caller guarantees `total`
+    // readable, initialized bytes at `buf`, unmodified for this call.
     let src = unsafe { std::slice::from_raw_parts(buf, total) };
     fwrite_(src, t) / size
 }

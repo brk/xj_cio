@@ -55,10 +55,13 @@ pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
     let file: File = match dir {
         PipeDir::Read => {
             let p = child.stdout.take().expect("popen: stdout pipe missing");
+            // SAFETY: `into_raw_fd` transfers ownership of the open pipe
+            // fd out of `p`, and the new `File` takes sole ownership.
             unsafe { File::from_raw_fd(p.into_raw_fd()) }
         }
         PipeDir::Write => {
             let p = child.stdin.take().expect("popen: stdin pipe missing");
+            // SAFETY: as above.
             unsafe { File::from_raw_fd(p.into_raw_fd()) }
         }
     };

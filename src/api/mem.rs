@@ -90,7 +90,32 @@ pub fn fmemopen_(buf: Vec<u8>, mode: &CStr) -> FILE_ptr {
     open_mem(MemStorage::Owned(buf), mode)
 }
 
-pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE_ptr {
+/// `fmemopen(buf, size, mode)`. A null `buf` allocates an internal
+/// buffer of `size` bytes, as [`fmemopen_`] does.
+///
+/// # Safety
+///
+/// If `buf` is non-null, the stream may access it until `fclose`,
+/// `pclose` or `freopen` on the stream has returned. If it is never
+/// closed, that period lasts to the end of the program, including the
+/// `atexit` flush. If the close happens while the calling thread holds
+/// a [`StreamGuard`] on the stream, `fclose` defers its work, and the
+/// period lasts until that guard is dropped and any operations on the
+/// stream that other threads had already started have returned. For
+/// that whole period:
+///
+/// - `buf` must be valid for reads and writes of `size` bytes, all
+///   initialized;
+/// - the bytes must not be accessed through any other pointer or
+///   reference while any operation on the stream is in progress (in
+///   particular, not concurrently from another thread), and no Rust
+///   reference to them may be live across such an operation.
+///
+/// Between operations the caller may read or write the bytes, as C
+/// programs do after `fflush`.
+///
+/// [`StreamGuard`]: crate::StreamGuard
+pub unsafe fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE_ptr {
     if buf.is_null() {
         if size == 0 {
             errno::set(libc::EINVAL);
@@ -98,6 +123,8 @@ pub fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE
         }
         return fmemopen_(vec![0u8; size], mode);
     }
+    // The caller's contract above is exactly the `MemStorage::User`
+    // invariant, so the stream may build slices over `buf`.
     open_mem(
         MemStorage::User {
             ptr: buf as *mut u8,

@@ -123,7 +123,14 @@ pub fn rewind(t: FILE_ptr) {
 /// `fgetpos`/`fsetpos` stash the position inside the user's `fpos_t`.
 /// We store an `i64` byte offset (libc's `fpos_t` is opaque so callers
 /// can't tell the difference).
-pub fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
+const _: () = assert!(size_of::<libc::fpos_t>() >= size_of::<i64>());
+
+/// # Safety
+///
+/// `pos` must be null (which fails with `EINVAL`) or valid for writes
+/// of a `libc::fpos_t`, and not accessed through any other pointer or
+/// reference during the call. No alignment is required.
+pub unsafe fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;
@@ -132,6 +139,10 @@ pub fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
     if off < 0 {
         return -1;
     }
+    // SAFETY: `pos` is non-null, so the caller guarantees it is
+    // writable for `size_of::<fpos_t>()` bytes, which the assertion
+    // above shows covers an `i64`. `write_unaligned` needs no
+    // alignment.
     unsafe {
         // libc::fpos_t on linux is a struct; we write an i64 into its
         // first 8 bytes. This works because translated programs treat
@@ -141,11 +152,20 @@ pub fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
     0
 }
 
-pub fn fsetpos(t: FILE_ptr, pos: *const libc::fpos_t) -> core::ffi::c_int {
+/// # Safety
+///
+/// `pos` must be null (which fails with `EINVAL`) or valid for reads of
+/// a `libc::fpos_t` whose first `size_of::<i64>()` bytes are
+/// initialized (e.g. one filled in by [`fgetpos`]), and not written
+/// through any other pointer during the call. No alignment is required.
+pub unsafe fn fsetpos(t: FILE_ptr, pos: *const libc::fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;
     }
+    // SAFETY: `pos` is non-null, so the caller guarantees its first
+    // `i64` is readable and initialized; `read_unaligned` needs no
+    // alignment.
     let off: i64 = unsafe { std::ptr::read_unaligned(pos as *const i64) };
     fseeko(t, off as libc::off_t, libc::SEEK_SET)
 }

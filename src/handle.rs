@@ -63,22 +63,45 @@ pub struct MemBacking {
 }
 
 pub enum MemStorage {
+    /// Caller-owned buffer from `fmemopen`.
+    ///
+    /// Invariant: for as long as this value exists, `ptr` is non-null
+    /// and valid for reads and writes of `len` initialized bytes, and
+    /// nothing else accesses those bytes while a `&`/`&mut` borrow of
+    /// this `MemStorage` is live. The only constructor, `fmemopen`,
+    /// takes this as its safety precondition.
     User { ptr: *mut u8, len: usize },
     Owned(Vec<u8>),
 }
 
+// SAFETY: `User` behaves like a `&'a mut [u8]` into the caller's
+// buffer: the `MemStorage::User` invariant gives this value exclusive
+// use of the bytes while it is borrowed, and plain bytes have no
+// thread affinity, so moving it to another thread is sound.
 unsafe impl Send for MemStorage {}
+// SAFETY: through `&MemStorage` only `MemBacking::slice` can reach the
+// bytes, and it only reads them. Under the `User` invariant, nothing
+// writes them while that borrow is live, so shared access from several
+// threads is just concurrent reads (as for `&[u8]`, which is `Sync`).
 unsafe impl Sync for MemStorage {}
 
 impl MemBacking {
     pub fn slice(&self) -> &[u8] {
         match &self.storage {
+            // SAFETY: by the `MemStorage::User` invariant, `ptr` is
+            // non-null and valid for reads of `len` initialized bytes
+            // (so `len <= isize::MAX`), and nothing writes them while
+            // `self` is borrowed, which bounds the returned slice.
             MemStorage::User { ptr, len } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
             MemStorage::Owned(v) => v.as_slice(),
         }
     }
     pub fn slice_mut(&mut self) -> &mut [u8] {
         match &mut self.storage {
+            // SAFETY: as in `slice`, and the `&mut self` borrow keeps
+            // any other slice of this storage from coexisting with the
+            // returned one. By the invariant, nothing outside it
+            // touches the bytes either.
             MemStorage::User { ptr, len } => unsafe { std::slice::from_raw_parts_mut(*ptr, *len) },
             MemStorage::Owned(v) => v.as_mut_slice(),
         }
@@ -287,12 +310,24 @@ impl Handle {
         )
     }
 
-    /// Wrap a raw fd (after `dup`) as a `File`. Caller asserts `fd`
-    /// is a valid kernel-owned descriptor we may close on drop.
-    pub unsafe fn file_from_dup(fd: libc::c_int) -> File {
-        unsafe {
-            let dup = libc::dup(fd);
-            File::from_raw_fd(dup)
+    /// `dup` `fd` and wrap the duplicate as a `File` that owns it (and
+    /// closes it on drop). `fd` itself is left untouched.
+    ///
+    /// # Safety
+    ///
+    /// `fd` must be an open file descriptor that the caller may use
+    /// (in the I/O-safety sense of a `BorrowedFd`) for the duration of
+    /// the call, i.e. not one that another component owns and may
+    /// close or reuse concurrently.
+    pub unsafe fn file_from_dup(fd: libc::c_int) -> io::Result<File> {
+        // SAFETY: the caller guarantees `fd` is open and borrowable, so
+        // `dup`ing it does not touch a descriptor we have no right to.
+        let dup = unsafe { libc::dup(fd) };
+        if dup < 0 {
+            return Err(io::Error::last_os_error());
         }
+        // SAFETY: `dup` succeeded, so `dup` is a fresh open descriptor
+        // that nothing else refers to; the `File` takes sole ownership.
+        Ok(unsafe { File::from_raw_fd(dup) })
     }
 }

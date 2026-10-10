@@ -16,14 +16,16 @@ fn fopen_fwrite_fclose_fopen_fread_roundtrip() {
     let fp = fopen(&p, &cstr("wb"));
     assert!(!fp.is_null());
     let data = b"hello world";
-    let n = fwrite(data.as_ptr(), 1, data.len(), fp);
+    // SAFETY: the source is a live byte slice of the given length.
+    let n = unsafe { fwrite(data.as_ptr(), 1, data.len(), fp) };
     assert_eq!(n, data.len());
     assert_eq!(fclose(fp), 0);
 
     let fp = fopen(&p, &cstr("rb"));
     assert!(!fp.is_null());
     let mut buf = [0u8; 32];
-    let n = fread(buf.as_mut_ptr(), 1, buf.len(), fp);
+    // SAFETY: the destination is a live, initialized local array of the given length.
+    let n = unsafe { fread(buf.as_mut_ptr(), 1, buf.len(), fp) };
     assert_eq!(n, data.len());
     assert_eq!(&buf[..n], data);
     assert_eq!(fclose(fp), 0);
@@ -37,7 +39,8 @@ fn fgetc_ungetc_roundtrip() {
     let p = cstr(path.to_str().unwrap());
 
     let fp = fopen(&p, &cstr("wb"));
-    fwrite(b"ABC".as_ptr(), 1, 3, fp);
+    // SAFETY: the source is a live byte slice of the given length.
+    unsafe { fwrite(b"ABC".as_ptr(), 1, 3, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -62,11 +65,12 @@ fn fprintf_renders_int_and_string() {
 
     let fp = fopen(&p, &cstr("w"));
     let s = cstr("world");
-    let r = fprintf(
+    // SAFETY: each `Arg::S` points to a live NUL-terminated string.
+    let r = unsafe { fprintf(
         fp,
         &cstr("%d %s\n"),
         &[Arg::I(42), Arg::S(s.as_ptr())],
-    );
+    ) };
     assert!(r > 0);
     fclose(fp);
 
@@ -85,11 +89,12 @@ fn fscanf_two_ints_with_whitespace() {
     let fp = fopen(&p, &cstr("r"));
     let mut a: libc::c_int = -1;
     let mut b: libc::c_int = -1;
-    let r = fscanf(
+    // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+    let r = unsafe { fscanf(
         fp,
         &cstr("%d %d"),
         &mut [OutArg::Int(&mut a as *mut _), OutArg::Int(&mut b as *mut _)],
-    );
+    ) };
     assert_eq!(r, 2);
     assert_eq!(a, 12);
     assert_eq!(b, 34);
@@ -110,6 +115,8 @@ fn fscanf_unsigned_signs_match_libc() {
     let format = cstr("%u %u %u %x %o %llu");
     let mut expected = [0 as libc::c_uint; 5];
     let mut expected_wide: libc::c_ulonglong = 0;
+    // SAFETY: both strings are live `CString`s, and each conversion's
+    // destination is a live local of the type its specifier expects.
     let matched = unsafe {
         libc::sscanf(
             input.as_ptr(),
@@ -126,7 +133,8 @@ fn fscanf_unsigned_signs_match_libc() {
     let stream = tmpfile();
     assert!(!stream.is_null());
     assert_eq!(
-        fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+        // SAFETY: the source is a live byte slice of the given length.
+        unsafe { fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream) },
         input.as_bytes().len()
     );
     rewind(stream);
@@ -134,7 +142,8 @@ fn fscanf_unsigned_signs_match_libc() {
     let mut actual_wide: libc::c_ulonglong = 0;
     let [a, b, c, d, e] = &mut actual;
     assert_eq!(
-        fscanf(
+        // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+        unsafe { fscanf(
             stream,
             &format,
             &mut [
@@ -145,7 +154,7 @@ fn fscanf_unsigned_signs_match_libc() {
                 OutArg::UInt(e),
                 OutArg::ULongLong(&mut actual_wide),
             ]
-        ),
+        ) },
         matched
     );
     assert_eq!(actual, expected);
@@ -174,6 +183,8 @@ fn fscanf_scanset_ranges_match_libc() {
         let format = cstr(format);
         let mut expected = [0u8; 128];
         let mut consumed: libc::c_int = 0;
+        // SAFETY: both strings are live `CString`s, `expected` holds any
+        // of the short test fields plus its NUL, and `%n` gets a `c_int`.
         let matched = unsafe {
             libc::sscanf(
                 input.as_ptr(),
@@ -185,17 +196,19 @@ fn fscanf_scanset_ranges_match_libc() {
         let stream = tmpfile();
         assert!(!stream.is_null());
         assert_eq!(
-            fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+            // SAFETY: the source is a live byte slice of the given length.
+            unsafe { fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream) },
             input.as_bytes().len()
         );
         rewind(stream);
         let mut actual = [0u8; 128];
         assert_eq!(
-            fscanf(
+            // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+            unsafe { fscanf(
                 stream,
                 &format,
                 &mut [OutArg::Str(actual.as_mut_ptr().cast())]
-            ),
+            ) },
             matched
         );
         assert_eq!(actual, expected, "input {input:?}, format {format:?}");
@@ -223,6 +236,9 @@ fn fscanf_numeric_matching_failure_matches_libc() {
         let input = cstr(input);
         let format = cstr(format);
         let mut expected = [37 as libc::c_int, 43];
+        // SAFETY: the stream is checked non-null and closed before the
+        // block ends; the buffers are live `CString`s; each `%d` gets a
+        // live `c_int`.
         let (matched, next) = unsafe {
             let stream = libc::tmpfile();
             assert!(!stream.is_null());
@@ -244,14 +260,16 @@ fn fscanf_numeric_matching_failure_matches_libc() {
         let stream = tmpfile();
         assert!(!stream.is_null());
         assert_eq!(
-            fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream),
+            // SAFETY: the source is a live byte slice of the given length.
+            unsafe { fwrite(input.as_ptr().cast(), 1, input.as_bytes().len(), stream) },
             input.as_bytes().len()
         );
         rewind(stream);
         let mut actual = [37 as libc::c_int, 43];
         let [a, b] = &mut actual;
         assert_eq!(
-            fscanf(stream, &format, &mut [OutArg::Int(a), OutArg::Int(b)]),
+            // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+            unsafe { fscanf(stream, &format, &mut [OutArg::Int(a), OutArg::Int(b)]) },
             matched,
             "input {input:?}"
         );
@@ -285,7 +303,8 @@ fn fseek_ftell_roundtrip() {
     let p = cstr(path.to_str().unwrap());
 
     let fp = fopen(&p, &cstr("wb"));
-    fwrite(b"0123456789".as_ptr(), 1, 10, fp);
+    // SAFETY: the source is a live byte slice of the given length.
+    unsafe { fwrite(b"0123456789".as_ptr(), 1, 10, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -302,7 +321,8 @@ fn fseek_ftell_roundtrip() {
 #[test]
 fn fmemopen_write_roundtrip() {
     let mut buf = [b'#'; 16];
-    let fp = fmemopen(buf.as_mut_ptr() as *mut _, buf.len(), &cstr("w"));
+    // SAFETY: `buf` outlives the stream (closed below) and is untouched until then.
+    let fp = unsafe { fmemopen(buf.as_mut_ptr() as *mut _, buf.len(), &cstr("w")) };
     assert!(!fp.is_null());
     let cs = cstr("hi");
     fputs(&cs, fp);
@@ -321,7 +341,8 @@ fn stream_guard_bufread_on_regular_file() {
     let p = cstr(path.to_str().unwrap());
 
     let fp = fopen(&p, &cstr("wb"));
-    fwrite(b"line one\nline two\nline three\n".as_ptr(), 1, 29, fp);
+    // SAFETY: the source is a live byte slice of the given length.
+    unsafe { fwrite(b"line one\nline two\nline three\n".as_ptr(), 1, 29, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -371,7 +392,8 @@ fn stream_guard_pushback_appears_in_fill_buf() {
     let p = cstr(path.to_str().unwrap());
 
     let fp = fopen(&p, &cstr("wb"));
-    fwrite(b"world".as_ptr(), 1, 5, fp);
+    // SAFETY: the source is a live byte slice of the given length.
+    unsafe { fwrite(b"world".as_ptr(), 1, 5, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -427,7 +449,8 @@ fn fclose_while_holding_stream_guard_does_not_panic() {
     let fp2 = fopen(&p, &cstr("rb"));
     assert!(!fp2.is_null());
     let mut buf = [0u8; 16];
-    let n = fread(buf.as_mut_ptr(), 1, buf.len(), fp2);
+    // SAFETY: the destination is a live, initialized local array of the given length.
+    let n = unsafe { fread(buf.as_mut_ptr(), 1, buf.len(), fp2) };
     assert_eq!(&buf[..n], b"hello");
     fclose(fp2);
     let _ = std::fs::remove_file(&path);
@@ -459,7 +482,8 @@ fn stream_guard_eof_indicator_after_drain() {
     let path = std::env::temp_dir().join("xj_cio_streamguard_eof.bin");
     let p = cstr(path.to_str().unwrap());
     let fp = fopen(&p, &cstr("wb"));
-    fwrite(b"ab".as_ptr(), 1, 2, fp);
+    // SAFETY: the source is a live byte slice of the given length.
+    unsafe { fwrite(b"ab".as_ptr(), 1, 2, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));

@@ -54,9 +54,15 @@ pub struct StreamGuard {
 
 impl StreamGuard {
     fn new(arc: Arc<FILE>, token: FILE_ptr) -> Option<Self> {
-        // SAFETY: `_arc` is held in the same struct; field drop order
-        // (state, then _guard, then _arc) ensures both extended
-        // borrows are released while their referent is still alive.
+        // SAFETY: only the lifetime changes. The guard borrows the
+        // mutex inside the `FILE` heap allocation, which does not move
+        // when `arc` moves into the struct, and which stays alive while
+        // `arc` (and later `_arc`) holds a strong count. Every exit
+        // path releases the guard before the `Arc`: on the early
+        // return below, the local `guard` drops before the parameter
+        // `arc`; once constructed, `Drop for StreamGuard` drops it
+        // before `_arc`. The guard never leaves this thread, because
+        // `ReentrantMutexGuard` (and so `StreamGuard`) is `!Send`.
         let guard: ReentrantMutexGuard<'static, RefCell<State>> =
             unsafe { std::mem::transmute(arc.raw_lock()) };
         // Race-window check: we may have cloned the Arc just before
@@ -66,6 +72,14 @@ impl StreamGuard {
         if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
+        // SAFETY: only the lifetime changes. The `RefMut` points at the
+        // `RefCell` inside the `FILE` allocation, not into `guard`, so
+        // moving `guard` into the struct does not invalidate it. That
+        // allocation outlives it (see above), and `Drop for
+        // StreamGuard` releases it while the mutex is still held, so
+        // the `RefCell` borrow flag is only touched under the lock.
+        // `borrow_mut` itself panics (soundly) if this thread already
+        // borrows the state.
         let state: RefMut<'static, State> = unsafe { std::mem::transmute(guard.borrow_mut()) };
         Some(StreamGuard {
             state: ManuallyDrop::new(state),
@@ -76,12 +90,14 @@ impl StreamGuard {
     }
 
     fn try_new(arc: Arc<FILE>, token: FILE_ptr) -> Option<Self> {
-        // SAFETY: same justification as `new`.
+        // SAFETY: as for the guard in `new`; the `?` early return drops
+        // nothing but `arc`.
         let guard: ReentrantMutexGuard<'static, RefCell<State>> =
             unsafe { std::mem::transmute(arc.raw_try_lock()?) };
         if arc.closed.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
+        // SAFETY: as for the `RefMut` in `new`.
         let state: RefMut<'static, State> = unsafe { std::mem::transmute(guard.borrow_mut()) };
         Some(StreamGuard {
             state: ManuallyDrop::new(state),
@@ -156,9 +172,11 @@ impl StreamGuard {
 
 impl Drop for StreamGuard {
     fn drop(&mut self) {
-        // SAFETY: drop in declaration order so each borrow is
-        // released while its referent is still live. `_arc` is
-        // dropped automatically after this block.
+        // SAFETY: each `ManuallyDrop` field is dropped exactly once,
+        // here, and never used again. The order (`state`, then
+        // `_guard`) releases the `RefCell` borrow while the mutex is
+        // still held, and both before `_arc`, which Rust drops after
+        // this body and which keeps their referent alive until then.
         unsafe {
             ManuallyDrop::drop(&mut self.state);
             ManuallyDrop::drop(&mut self._guard);

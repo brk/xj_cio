@@ -86,7 +86,18 @@ pub fn setvbuf(
                     // so std's `Stdout` (which we drop) doesn't
                     // close it on us.
                     let raw = s.handle.raw_fd();
-                    let f = unsafe { Handle::file_from_dup(raw) };
+                    // SAFETY: `raw` is `STD{IN,OUT,ERR}_FILENO` (the
+                    // handle is one of the `*Shared` variants). The
+                    // standard descriptors are borrowable for the
+                    // whole program; std makes the same assumption in
+                    // `impl AsFd for Stdout` and friends.
+                    let f = match unsafe { Handle::file_from_dup(raw) } {
+                        Ok(f) => f,
+                        Err(e) => {
+                            errno::set_from_io(&e);
+                            return -1;
+                        }
+                    };
                     s.handle = match s.handle {
                         Handle::StdoutShared => Handle::StdoutBypass(f),
                         Handle::StderrShared => Handle::StderrBypass(f),

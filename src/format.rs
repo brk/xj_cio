@@ -10,6 +10,23 @@ use crate::api::ops;
 
 /// One input argument to `printf` family. The translator picks the
 /// variant matching the matching format spec.
+///
+/// # Pointer validity
+///
+/// The `printf` family dereferences two of the pointer variants. Its
+/// (unsafe) callers must ensure, for each argument that a conversion
+/// in the format consumes:
+///
+/// - `S(p)` consumed by `%s`: `p` is null (printed as `(null)`) or
+///   valid for reads up to and including its first NUL byte, or of
+///   `precision` bytes if the conversion has a precision and no NUL
+///   comes first. Those bytes are not written during the call.
+/// - `OutN(p)` consumed by `%n`: `p` is null (ignored) or valid for an
+///   aligned write of a `c_int`, and not accessed through any other
+///   pointer or reference during the call.
+///
+/// `P`, and `S` consumed by any other conversion, are never
+/// dereferenced.
 #[derive(Clone, Copy)]
 pub enum Arg {
     I(i64),
@@ -21,10 +38,33 @@ pub enum Arg {
     OutN(*mut libc::c_int),
 }
 
+// SAFETY: `Arg` is plain data. Its pointers are dereferenced only by
+// the unsafe formatting functions, whose callers vouch for the pointees
+// (including freedom from data races) per "Pointer validity" above.
+// Moving or sharing an `Arg` by itself accesses nothing.
 unsafe impl Send for Arg {}
+// SAFETY: as for `Send`.
 unsafe impl Sync for Arg {}
 
 /// One output destination for `scanf` family.
+///
+/// # Pointer validity
+///
+/// The `scanf` family writes through the raw-pointer variants. Its
+/// (unsafe) callers must ensure, for each argument that a
+/// non-suppressed conversion stores into:
+///
+/// - `Int`, `Short`, `Long`, `LongLong`, `UInt`, `ULong`, `ULongLong`,
+///   `Float`, `Double`: the pointer is null (the store is skipped) or
+///   valid for an aligned write of its pointee type.
+/// - `Str(p)`: `p` is non-null and valid for writes of the bytes
+///   stored. For `%s` and `%[`, that is the matched field plus a NUL
+///   (at most width + 1 bytes when the conversion has a width). For
+///   `%c`, it is exactly the width (default 1).
+///
+/// In every case the destination must not be accessed through any
+/// other pointer or reference, including the format string, during
+/// the call.
 pub enum OutArg<'a> {
     Suppress,
     Int(*mut libc::c_int),
@@ -52,14 +92,24 @@ pub enum OutArg<'a> {
     Buf(xj_zstr::CStrDest<'a>),
 }
 
+// SAFETY: as for `Arg`: the raw pointers are written only by the
+// unsafe `scanf` functions, under their callers' guarantees. `Buf` holds
+// a `CStrDest` (a `&mut [u8]` and a flag), which is `Send + Sync` anyway.
 unsafe impl Send for OutArg<'_> {}
+// SAFETY: as for `Send`.
 unsafe impl Sync for OutArg<'_> {}
 
 // --------------------------------------------------------------------------
 // printf engine
 // --------------------------------------------------------------------------
 
-pub fn format_to_vec(out: &mut Vec<u8>, fmt: &[u8], args: &[Arg]) {
+/// Formats `fmt` with `args` into `out`.
+///
+/// # Safety
+///
+/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
+/// section for the conversions in `fmt`.
+pub unsafe fn format_to_vec(out: &mut Vec<u8>, fmt: &[u8], args: &[Arg]) {
     let mut i = 0;
     let mut a = 0;
     while i < fmt.len() {
@@ -161,7 +211,9 @@ pub fn format_to_vec(out: &mut Vec<u8>, fmt: &[u8], args: &[Arg]) {
             }
             b's' => {
                 let p = take_str(args, &mut a);
-                fmt_str(out, p, width, precision, f_minus);
+                // SAFETY: `p` is null or an `Arg::S` consumed by `%s`
+                // with this `precision`, which the caller vouches for.
+                unsafe { fmt_str(out, p, width, precision, f_minus) };
             }
             b'c' => {
                 let v = take_char(args, &mut a);
@@ -187,6 +239,9 @@ pub fn format_to_vec(out: &mut Vec<u8>, fmt: &[u8], args: &[Arg]) {
             b'n' => {
                 let p = take_outn(args, &mut a);
                 if !p.is_null() {
+                    // SAFETY: a non-null `Arg::OutN` consumed by `%n`,
+                    // which the caller guarantees is valid for an
+                    // aligned, unaliased `c_int` write.
                     unsafe { *p = out.len() as libc::c_int };
                 }
             }
@@ -412,7 +467,12 @@ fn u64_to_base(mut v: u64, base: u32, upper: bool) -> Vec<u8> {
 
 // ------------- string formatter -------------
 
-fn fmt_str(
+/// # Safety
+///
+/// `p` must be null, or valid for reads up to and including its first
+/// NUL, or of `precision` bytes if `precision` is `Some` and no NUL
+/// comes first. Those bytes must not be written during the call.
+unsafe fn fmt_str(
     out: &mut Vec<u8>,
     p: *const libc::c_char,
     width: Option<usize>,
@@ -426,6 +486,10 @@ fn fmt_str(
         // Walk until NUL or precision cap (precision bounds reads
         // even when no NUL is present, per ISO C).
         let cap = precision.unwrap_or(usize::MAX);
+        // SAFETY: the loop reads only bytes before the first NUL or the
+        // precision cap (plus the NUL itself), all readable and unwritten
+        // per the caller's contract. The slice covers the `len` bytes
+        // just read.
         unsafe {
             while len < cap && *p.add(len) != 0 {
                 len += 1;
@@ -645,9 +709,14 @@ fn pad_and_emit(out: &mut Vec<u8>, body: &[u8], width: Option<usize>, f_minus: b
 
 /// Top-level fprintf entry: format into a scratch buffer, then push
 /// it through the stream's buffering policy.
-pub fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> core::ffi::c_int {
+///
+/// # Safety
+///
+/// As for [`format_to_vec`].
+pub unsafe fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> core::ffi::c_int {
     let mut out = Vec::with_capacity(fmt.len() + 16);
-    format_to_vec(&mut out, fmt, args);
+    // SAFETY: forwarded from the caller.
+    unsafe { format_to_vec(&mut out, fmt, args) };
     if !state.mode.writable() {
         errno::set(libc::EBADF);
         state.err = true;
@@ -663,7 +732,13 @@ pub fn run_printf(state: &mut State, fmt: &[u8], args: &[Arg]) -> core::ffi::c_i
 // scanf engine
 // --------------------------------------------------------------------------
 
-pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core::ffi::c_int {
+/// Runs a `scanf` format against `state`, storing into `args`.
+///
+/// # Safety
+///
+/// `args` must meet the requirements in [`OutArg`]'s "Pointer
+/// validity" section for the conversions in `fmt`.
+pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     if !state.mode.readable() {
         errno::set(libc::EBADF);
         state.err = true;
@@ -805,6 +880,9 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core
                         matched
                     };
                 }
+                // SAFETY: `buf` holds only bytes accepted above (sign,
+                // digits, `a-f`/`A-F`, `x`/`X`), all ASCII, so it is
+                // valid UTF-8.
                 let s = unsafe { std::str::from_utf8_unchecked(&buf) };
                 let parsed: i64 = match conv {
                     b'd' | b'i' => parse_int_with_radix(s, 0).unwrap_or(0),
@@ -815,7 +893,10 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core
                 };
                 if !suppress {
                     if let Some(arg) = args.get(a) {
-                        write_int_to_outarg(arg, parsed);
+                        // SAFETY: `arg` is the destination of this
+                        // non-suppressed conversion; the caller vouches
+                        // for it.
+                        unsafe { write_int_to_outarg(arg, parsed) };
                     }
                     a += 1;
                     matched += 1;
@@ -843,7 +924,10 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core
                     return if consumed_any || matched > 0 { matched } else { -1 };
                 }
                 if !suppress {
-                    if store_string(state, args.get_mut(a), &mut buf).is_err() {
+                    // SAFETY: the destination of this non-suppressed
+                    // `%s`; the caller vouches for room for the field
+                    // and its NUL.
+                    if unsafe { store_string(state, args.get_mut(a), &mut buf) }.is_err() {
                         return matched;
                     }
                     a += 1;
@@ -875,6 +959,9 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core
                 }
                 if !suppress {
                     match args.get_mut(a) {
+                        // SAFETY: the destination of this non-suppressed
+                        // `%c`; the caller guarantees `p` is valid for
+                        // `cap == buf.len()` unaliased bytes of writes.
                         Some(OutArg::Str(p)) => unsafe {
                             for (j, &b) in buf.iter().enumerate() {
                                 *p.add(j) = b as libc::c_char;
@@ -946,7 +1033,10 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core
                     };
                 }
                 if !suppress {
-                    if store_string(state, args.get_mut(a), &mut buf).is_err() {
+                    // SAFETY: the destination of this non-suppressed
+                    // `%[`; the caller vouches for room for the field
+                    // and its NUL.
+                    if unsafe { store_string(state, args.get_mut(a), &mut buf) }.is_err() {
                         return matched;
                     }
                     a += 1;
@@ -998,12 +1088,18 @@ pub fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core
                 if !have_digit {
                     return if consumed_any || matched > 0 { matched } else { -1 };
                 }
+                // SAFETY: `buf` holds only bytes accepted above (sign,
+                // digits, `.`, `e`/`E`), all ASCII, so it is valid UTF-8.
                 let s = unsafe { std::str::from_utf8_unchecked(&buf) };
                 let v: f64 = s.parse().unwrap_or(0.0);
                 if !suppress {
                     if let Some(arg) = args.get(a) {
                         match *arg {
+                            // SAFETY: a non-null destination of this
+                            // non-suppressed conversion; the caller
+                            // guarantees an aligned, unaliased write.
                             OutArg::Float(p) if !p.is_null() => unsafe { *p = v as f32 },
+                            // SAFETY: as for `Float`.
                             OutArg::Double(p) if !p.is_null() => unsafe { *p = v },
                             _ => {}
                         }
@@ -1052,8 +1148,16 @@ fn field_limit(args: &[OutArg<'_>], a: usize, suppress: bool, width: usize) -> u
 /// Stores a `%s` or `%[` field and its terminator. On overflow of a
 /// checked destination, stores the prefix that fits, pushes the one
 /// extra byte back, sets `EOVERFLOW`, and returns `Err`.
-fn store_string(state: &mut State, arg: Option<&mut OutArg<'_>>, field: &mut Vec<u8>) -> Result<(), ()> {
+///
+/// # Safety
+///
+/// If `arg` is `Some(OutArg::Str(p))`, `p` must be valid for writes of
+/// `field.len() + 1` bytes, not accessed through any other pointer or
+/// reference during the call.
+unsafe fn store_string(state: &mut State, arg: Option<&mut OutArg<'_>>, field: &mut Vec<u8>) -> Result<(), ()> {
     match arg {
+        // SAFETY: the caller guarantees `field.len() + 1` writable,
+        // unaliased bytes at `p`; we write exactly that many.
         Some(OutArg::Str(p)) => unsafe {
             let p = *p;
             for (j, &b) in field.iter().enumerate() {
@@ -1078,7 +1182,14 @@ fn store_string(state: &mut State, arg: Option<&mut OutArg<'_>>, field: &mut Vec
     Ok(())
 }
 
-fn write_int_to_outarg(arg: &OutArg<'_>, v: i64) {
+/// # Safety
+///
+/// If `arg` is a non-null integer variant, its pointer must be valid
+/// for an aligned write of its pointee type, not accessed through any
+/// other pointer or reference during the call.
+unsafe fn write_int_to_outarg(arg: &OutArg<'_>, v: i64) {
+    // SAFETY: only non-null pointers are written, which the caller
+    // guarantees are valid, aligned and unaliased for their types.
     unsafe {
         match *arg {
             OutArg::Int(p) if !p.is_null() => *p = v as libc::c_int,

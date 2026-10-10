@@ -101,16 +101,20 @@ fn getdelim_counts_bytes_past_an_embedded_nul() {
 #[test]
 fn snprintf_into_a_zstr_uses_every_writable_byte() {
     let mut owned = ZString::with_capacity(4);
-    assert_eq!(snprintf_((&mut owned).into(), c"%s-%d", &[Arg::S(c"ab".as_ptr()), Arg::I(7)]), 4);
+    // SAFETY: each `Arg::S` points to a live NUL-terminated string.
+    assert_eq!(unsafe { snprintf_((&mut owned).into(), c"%s-%d", &[Arg::S(c"ab".as_ptr()), Arg::I(7)]) }, 4);
     assert_eq!(owned.as_bytes(), b"ab-7");
 
-    assert_eq!(snprintf_(owned.limit(3), c"%d", &[Arg::I(12345)]), 5);
+    // SAFETY: each `Arg::S` points to a live NUL-terminated string.
+    assert_eq!(unsafe { snprintf_(owned.limit(3), c"%d", &[Arg::I(12345)]) }, 5);
     assert_eq!(owned.as_buffer(), b"12\07\0");
 
     let mut raw = [b'x'; 4];
-    let n = snprintf(raw.as_mut_ptr() as *mut libc::c_char, raw.len(), c"%d", &[Arg::I(12345)]);
+    // SAFETY: the destination is a live, initialized local array of length `n`.
+    let n = unsafe { snprintf(raw.as_mut_ptr() as *mut libc::c_char, raw.len(), c"%d", &[Arg::I(12345)]) };
     assert_eq!((n, &raw), (5, b"123\0"));
-    let n = sprintf(raw.as_mut_ptr() as *mut libc::c_char, c"%d", &[Arg::I(9)]);
+    // SAFETY: the destination is a live array large enough for the output and its NUL.
+    let n = unsafe { sprintf(raw.as_mut_ptr() as *mut libc::c_char, c"%d", &[Arg::I(9)]) };
     assert_eq!(n, 1);
     assert_eq!(&raw, b"9\03\0");
 }
@@ -132,7 +136,8 @@ fn tmpnam_and_ctermid_fill_or_refuse_a_destination() {
     assert_eq!(errno::get(), libc::ERANGE);
     assert_eq!(&small, b"xxxx");
 
-    assert!(!tmpnam(std::ptr::null_mut()).is_null());
+    // SAFETY: no other caller in this test binary uses the static buffer.
+    assert!(!unsafe { tmpnam(std::ptr::null_mut()) }.is_null());
 }
 
 #[test]
@@ -141,7 +146,8 @@ fn scanf_string_fields_fit_a_zstr_exactly() {
     let mut word = ZString::with_capacity(4);
     let mut set = [b'-'; 3];
     let mut number: libc::c_int = 0;
-    let r = fscanf(
+    // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+    let r = unsafe { fscanf(
         input.stream,
         c"%s %d %[xy]",
         &mut [
@@ -149,7 +155,7 @@ fn scanf_string_fields_fit_a_zstr_exactly() {
             OutArg::Int(&mut number),
             OutArg::Buf((&mut set).into()),
         ],
-    );
+    ) };
     assert_eq!(r, 3);
     assert_eq!(word.as_bytes(), b"abcd");
     assert_eq!(number, 42);
@@ -163,11 +169,12 @@ fn scanf_overflow_stores_the_prefix_and_leaves_the_rest_unread() {
     let mut word = ZString::with_capacity(4);
     let mut number: libc::c_int = 0;
     errno::set(0);
-    let r = fscanf(
+    // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+    let r = unsafe { fscanf(
         input.stream,
         c"%s %d",
         &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut number)],
-    );
+    ) };
     assert_eq!(r, 0);
     assert_eq!(errno::get(), libc::EOVERFLOW);
     assert_eq!(word.as_bytes(), b"abcd");
@@ -179,7 +186,8 @@ fn scanf_overflow_stores_the_prefix_and_leaves_the_rest_unread() {
 fn scanf_width_bounds_the_field_before_the_destination_does() {
     let input = Input::new("scanf_width", b"abcdefg");
     let mut word = ZString::with_capacity(4);
-    let r = fscanf(input.stream, c"%3s", &mut [OutArg::Buf(word.limit(4))]);
+    // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+    let r = unsafe { fscanf(input.stream, c"%3s", &mut [OutArg::Buf(word.limit(4))]) };
     assert_eq!(r, 1);
     assert_eq!(word.as_bytes(), b"abc");
 }
@@ -188,14 +196,16 @@ fn scanf_width_bounds_the_field_before_the_destination_does() {
 fn scanf_chars_fill_the_region_without_a_terminator() {
     let input = Input::new("scanf_chars", b"abcdefgh");
     let mut exact = *b"xxx";
-    let r = fscanf(input.stream, c"%3c", &mut [OutArg::Buf((&mut exact).into())]);
+    // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+    let r = unsafe { fscanf(input.stream, c"%3c", &mut [OutArg::Buf((&mut exact).into())]) };
     assert_eq!(r, 1);
     assert_eq!(&exact, b"abc");
 
     // A ZStr's reserved NUL is not writable, so %3c needs capacity 3.
     let mut small = ZString::new(b"xx");
     errno::set(0);
-    let r = fscanf(input.stream, c"%3c", &mut [OutArg::Buf((&mut small).into())]);
+    // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
+    let r = unsafe { fscanf(input.stream, c"%3c", &mut [OutArg::Buf((&mut small).into())]) };
     assert_eq!(r, 0);
     assert_eq!(errno::get(), libc::EOVERFLOW);
     assert_eq!(small.as_buffer(), b"xx\0");

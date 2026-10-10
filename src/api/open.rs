@@ -181,16 +181,34 @@ pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
     }
 }
 
-pub fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
+/// `freopen(path, mode, fp)`. See [`freopen_`].
+///
+/// # Safety
+///
+/// `path` must be null or point to a NUL-terminated string that is
+/// valid for reads up to and including its NUL and is not modified
+/// during the call.
+pub unsafe fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
     let p = if path.is_null() {
         None
     } else {
+        // SAFETY: non-null, so the caller guarantees a valid,
+        // unmodified NUL-terminated string.
         Some(unsafe { CStr::from_ptr(path) })
     };
     freopen_(p, mode, t)
 }
 
-pub fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {
+/// `fdopen(fd, mode)`. Unlike C, the stream wraps a `dup` of `fd`, so
+/// `fd` stays open (and owned by the caller) after `fclose`.
+///
+/// # Safety
+///
+/// `fd` must be negative (which fails with `EBADF`) or an open file
+/// descriptor that the caller may use, in the I/O-safety sense of a
+/// `BorrowedFd`, for the duration of the call, i.e. not one that
+/// another component owns and may close or reuse concurrently.
+pub unsafe fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {
     let m = match OpenMode::parse(mode.to_bytes()) {
         Some(m) => m,
         None => {
@@ -203,11 +221,14 @@ pub fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {
         return std::ptr::null();
     }
     // Dup so that our Drop doesn't close the caller's fd.
+    // SAFETY: the caller guarantees `fd` is open and borrowable.
     let dup = unsafe { libc::dup(fd) };
     if dup < 0 {
         errno::set_from_io(&std::io::Error::last_os_error());
         return std::ptr::null();
     }
+    // SAFETY: `dup` succeeded, so `dup` is a fresh open descriptor that
+    // nothing else refers to; the `File` takes sole ownership.
     let f = unsafe { File::from_raw_fd(dup) };
     let state = State::new(Handle::Regular(f), m, BufferPolicy::Full, BUFSIZ);
     slots::insert(Arc::new(FILE::new(state)))
@@ -233,6 +254,7 @@ pub fn fileno(t: FILE_ptr) -> core::ffi::c_int {
 pub fn tmpfile() -> FILE_ptr {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    // SAFETY: `getpid` has no preconditions.
     let pid = unsafe { libc::getpid() };
     for i in 0..32 {
         let path = format!("/tmp/xj_cio_tmp_{}_{}_{}", pid, nanos, i);
@@ -277,13 +299,26 @@ pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
+    // SAFETY: `getpid` has no preconditions.
     let pid = unsafe { libc::getpid() } as u64;
     // Twelve hex digits keep the name within L_tmpnam - 1 == 19 bytes.
     let s = format!("/tmp/xj{:012x}", ((pid << 32) ^ nanos) & 0xffff_ffff_ffff);
     write_name(dst, s.as_bytes())
 }
 
-pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
+/// `tmpnam(buf)`. Writes a fresh temporary path into `buf`, or into a
+/// static buffer if `buf` is null, and returns the buffer used.
+///
+/// # Safety
+///
+/// - If `buf` is non-null, it must be valid for reads and writes of
+///   `L_tmpnam` initialized bytes, not accessed through any other
+///   pointer or reference during the call.
+/// - If `buf` is null, the call writes the shared static buffer, as in
+///   C. No other thread may call `tmpnam(NULL)` concurrently, and no
+///   reference to that buffer from an earlier call may be live (and
+///   no access through a pointer to it may overlap the call).
+pub unsafe fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
     // Static buffer when the user passes NULL.
     static mut STATIC_BUF: [libc::c_char; crate::L_tmpnam] = [0; crate::L_tmpnam];
 
@@ -293,6 +328,10 @@ pub fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
         buf
     };
     // C requires `buf` to hold at least L_tmpnam bytes.
+    // SAFETY: a non-null `buf` is `L_tmpnam` initialized bytes owned by
+    // this call (caller's contract). Otherwise `dst` is `STATIC_BUF`,
+    // which is exactly `L_tmpnam` zero-initialized bytes, and the caller
+    // guarantees no other access to it overlaps this call.
     let region = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, crate::L_tmpnam) };
     match tmpnam_(region.into()) {
         Some(_) => dst,
@@ -357,7 +396,19 @@ pub fn ctermid_(dst: CStrDest<'_>) -> Option<usize> {
     write_name(dst, b"/dev/tty")
 }
 
-pub fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
+/// `ctermid(buf)`. Writes the controlling terminal's path into `buf`,
+/// or into a static buffer if `buf` is null, and returns the buffer.
+///
+/// # Safety
+///
+/// - If `buf` is non-null, it must be valid for reads and writes of
+///   `L_ctermid` initialized bytes, not accessed through any other
+///   pointer or reference during the call.
+/// - If `buf` is null, the call writes the shared static buffer, as in
+///   C. No other thread may call `ctermid(NULL)` concurrently, and no
+///   reference to that buffer from an earlier call may be live (and
+///   no access through a pointer to it may overlap the call).
+pub unsafe fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
     static mut CTERMID: [libc::c_char; crate::L_ctermid] = [0; crate::L_ctermid];
     let dst = if buf.is_null() {
         (&raw mut CTERMID) as *mut libc::c_char
@@ -365,6 +416,7 @@ pub fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
         buf
     };
     // C requires `buf` to hold at least L_ctermid bytes.
+    // SAFETY: as in `tmpnam`, with `L_ctermid` and `CTERMID`.
     let region = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, crate::L_ctermid) };
     match ctermid_(region.into()) {
         Some(_) => dst,

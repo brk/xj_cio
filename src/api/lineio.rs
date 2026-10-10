@@ -62,10 +62,19 @@ pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
 /// `fgets(buf, n, fp)`. Reads up to `n-1` bytes; stops at `\n`
 /// (which is included) or EOF. Always NUL-terminates if `n >= 1`.
 /// Returns `buf` on success, `NULL` on EOF-before-any-bytes or error.
-pub fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::c_char {
+///
+/// # Safety
+///
+/// If `buf` is non-null and `n > 0`, `buf` must be valid for reads and
+/// writes of `n` bytes, all `n` of which must be initialized, and the
+/// region must not be accessed through any other pointer or reference
+/// for the duration of the call.
+pub unsafe fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::c_char {
     if n <= 0 || buf.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: `buf` is non-null and `n > 0`, so the caller guarantees
+    // `n` initialized bytes at `buf`, exclusively ours for this call.
     let dst = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, n as usize) };
     match fgets_(dst.into(), t) {
         Some(_) => buf,
@@ -108,7 +117,11 @@ pub fn puts(s: &CStr) -> core::ffi::c_int {
 }
 
 /// Common implementation for `getline` and `getdelim`.
-fn getdelim_impl(
+///
+/// # Safety
+///
+/// See [`getdelim`].
+unsafe fn getdelim_impl(
     line_ptr: *mut *mut libc::c_char,
     n_ptr: *mut libc::size_t,
     delim: i32,
@@ -130,15 +143,26 @@ fn getdelim_impl(
         // passed a NULL pointer, allocate fresh; if non-NULL, the
         // current allocation is owned by malloc, so we must use libc
         // realloc rather than Vec::from_raw_parts.
+        // SAFETY: both pointers are non-null (checked above), and the
+        // caller guarantees they are valid for aligned reads and writes.
         let mut cur: *mut libc::c_char = unsafe { *line_ptr };
-        let mut cap: usize = unsafe { *n_ptr };
+        // As in POSIX, `*n_ptr` is ignored when `*line_ptr` is null, so
+        // a stale size cannot make us write through a null pointer.
+        // SAFETY: as for `*line_ptr`.
+        let mut cap: usize = if cur.is_null() { 0 } else { unsafe { *n_ptr } };
         let mut len: usize = 0;
 
+        // Invariant: `cur` is null with `cap == 0`, or a live malloc
+        // allocation of at least `cap` bytes.
         let ensure = |cur: &mut *mut libc::c_char, cap: &mut usize, want: usize| -> bool {
             if *cap >= want {
                 return true;
             }
             let new_cap = (*cap).max(128).max(want).next_power_of_two();
+            // SAFETY: by the invariant (from the caller's contract on
+            // `*line_ptr`), `*cur` is null or a live malloc allocation.
+            // On success the old pointer is dead and we replace it; on
+            // failure it is untouched.
             let p = unsafe { libc::realloc(*cur as *mut libc::c_void, new_cap) };
             if p.is_null() {
                 errno::set(libc::ENOMEM);
@@ -155,12 +179,16 @@ fn getdelim_impl(
                 Ok(Some(b)) => {
                     got_anything = true;
                     if !ensure(&mut cur, &mut cap, len + 2) {
+                        // SAFETY: valid for writes per the caller; this
+                        // hands back the (still live) allocation.
                         unsafe {
                             *line_ptr = cur;
                             *n_ptr = cap;
                         }
                         return -1isize as libc::ssize_t;
                     }
+                    // SAFETY: `ensure` made `cur` an allocation of at
+                    // least `len + 2 > len` bytes.
                     unsafe {
                         *cur.add(len) = b as libc::c_char;
                     }
@@ -171,6 +199,7 @@ fn getdelim_impl(
                 }
                 Ok(None) => break,
                 Err(_) => {
+                    // SAFETY: valid for writes per the caller.
                     unsafe {
                         *line_ptr = cur;
                         *n_ptr = cap;
@@ -180,6 +209,7 @@ fn getdelim_impl(
             }
         }
         if !got_anything {
+            // SAFETY: valid for writes per the caller.
             unsafe {
                 *line_ptr = cur;
                 *n_ptr = cap;
@@ -188,12 +218,15 @@ fn getdelim_impl(
         }
         // NUL-terminate.
         if !ensure(&mut cur, &mut cap, len + 1) {
+            // SAFETY: valid for writes per the caller.
             unsafe {
                 *line_ptr = cur;
                 *n_ptr = cap;
             }
             return -1isize as libc::ssize_t;
         }
+        // SAFETY: `ensure` made `cur` at least `len + 1` bytes; the
+        // out-pointers are valid for writes per the caller.
         unsafe {
             *cur.add(len) = 0;
             *line_ptr = cur;
@@ -254,19 +287,42 @@ pub fn getdelim_(line: &mut ZString, delim: libc::c_int, t: FILE_ptr) -> libc::s
     r.unwrap_or(-1)
 }
 
-pub fn getline(
+/// `getline(lineptr, n, fp)`: `getdelim` with `delim = '\n'`.
+///
+/// # Safety
+///
+/// See [`getdelim`].
+pub unsafe fn getline(
     line_ptr: *mut *mut libc::c_char,
     n_ptr: *mut libc::size_t,
     t: FILE_ptr,
 ) -> libc::ssize_t {
-    getdelim_impl(line_ptr, n_ptr, b'\n' as i32, t)
+    // SAFETY: forwarded from the caller.
+    unsafe { getdelim_impl(line_ptr, n_ptr, b'\n' as i32, t) }
 }
 
-pub fn getdelim(
+/// `getdelim(lineptr, n, delim, fp)`. Reads through the next `delim`
+/// byte (or EOF) into `*lineptr`, growing it with `realloc` and
+/// updating `*n`. Returns the number of bytes read, or -1.
+///
+/// # Safety
+///
+/// - `line_ptr` and `n_ptr` must each be null (which fails with
+///   `EINVAL`) or valid for aligned reads and writes.
+/// - `*line_ptr` must be null or a live pointer returned by `malloc`,
+///   `calloc` or `realloc`. If it is non-null, the allocation must be
+///   at least `*n_ptr` bytes. If it is null, `*n_ptr` is ignored.
+/// - Neither `*line_ptr`'s allocation nor `*line_ptr`/`*n_ptr` may be
+///   accessed through any other pointer or reference during the call.
+///
+/// On return, `*line_ptr` may have been reallocated (the old pointer
+/// is then dangling) and the caller owns it.
+pub unsafe fn getdelim(
     line_ptr: *mut *mut libc::c_char,
     n_ptr: *mut libc::size_t,
     delim: libc::c_int,
     t: FILE_ptr,
 ) -> libc::ssize_t {
-    getdelim_impl(line_ptr, n_ptr, delim, t)
+    // SAFETY: forwarded from the caller.
+    unsafe { getdelim_impl(line_ptr, n_ptr, delim, t) }
 }
