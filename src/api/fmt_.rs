@@ -135,7 +135,7 @@ pub unsafe fn snprintf_(mut dst: CStrDest<'_>, fmt: &CStr, args: &[Arg]) -> core
 ///   uninitialized), where `len` is the formatted length (the return
 ///   value). A buffer of `n` bytes always suffices. The region must not be accessed through any
 ///   other pointer or reference, including `fmt`, during the call.
-pub unsafe fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
+pub unsafe fn snprintf(buf: *mut u8, n: libc::size_t, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     let bytes = fmt.to_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     // SAFETY: forwarded from the caller.
@@ -151,8 +151,8 @@ pub unsafe fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args
         // `write_truncated` overwrites all `len`). All `args` accesses
         // (including `%n` writes) finished above, before this borrow.
         let region = unsafe {
-            std::ptr::write_bytes(buf as *mut u8, 0, len);
-            std::slice::from_raw_parts_mut(buf as *mut u8, len)
+            std::ptr::write_bytes(buf, 0, len);
+            std::slice::from_raw_parts_mut(buf, len)
         };
         CStrDest::from(region).write_truncated(&out);
     }
@@ -166,7 +166,7 @@ pub unsafe fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args
 /// As for [`snprintf`] with `n = SIZE_MAX`. In particular, a non-null
 /// `buf` must be valid for `len + 1` bytes, where `len` is the
 /// formatted length.
-pub unsafe fn sprintf(buf: *mut libc::c_char, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
+pub unsafe fn sprintf(buf: *mut u8, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     // SAFETY: forwarded from the caller.
     unsafe { snprintf(buf, libc::size_t::MAX, fmt, args) }
 }

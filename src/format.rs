@@ -32,7 +32,7 @@ pub enum Arg {
     I(i64),
     U(u64),
     F(f64),
-    S(*const libc::c_char),
+    S(*const u8),
     C(libc::c_int),
     P(*const libc::c_void),
     OutN(*mut libc::c_int),
@@ -78,7 +78,7 @@ pub enum OutArg<'a> {
     Double(*mut f64),
     /// `%s`, `%c`, `%[...]`: write bytes into a char buffer.
     /// The translator must size the buffer; this is *not* checked.
-    Str(*mut libc::c_char),
+    Str(*mut u8),
     /// `%s`, `%c`, `%[...]`: write bytes into a sized destination, such
     /// as `(&mut buf).into()`, a `ZStr` as `z.into()`, or `z.limit(n)`.
     ///
@@ -274,7 +274,7 @@ fn take_uint(args: &[Arg], a: &mut usize) -> u64 {
     *a += 1;
     v
 }
-fn take_str(args: &[Arg], a: &mut usize) -> *const libc::c_char {
+fn take_str(args: &[Arg], a: &mut usize) -> *const u8 {
     let v = match args.get(*a).copied() {
         Some(Arg::S(p)) => p,
         _ => std::ptr::null(),
@@ -474,7 +474,7 @@ fn u64_to_base(mut v: u64, base: u32, upper: bool) -> Vec<u8> {
 /// comes first. Those bytes must not be written during the call.
 unsafe fn fmt_str(
     out: &mut Vec<u8>,
-    p: *const libc::c_char,
+    p: *const u8,
     width: Option<usize>,
     precision: Option<usize>,
     f_minus: bool,
@@ -494,7 +494,7 @@ unsafe fn fmt_str(
             while len < cap && *p.add(len) != 0 {
                 len += 1;
             }
-            std::slice::from_raw_parts(p as *const u8, len)
+            std::slice::from_raw_parts(p, len)
         }
     };
     let used = match precision {
@@ -964,7 +964,7 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
                         // `cap == buf.len()` unaliased bytes of writes.
                         Some(OutArg::Str(p)) => unsafe {
                             for (j, &b) in buf.iter().enumerate() {
-                                *p.add(j) = b as libc::c_char;
+                                *p.add(j) = b;
                             }
                         },
                         Some(OutArg::Buf(dst)) => dst.region_mut()[..cap].copy_from_slice(&buf),
@@ -1161,7 +1161,7 @@ unsafe fn store_string(state: &mut State, arg: Option<&mut OutArg<'_>>, field: &
         Some(OutArg::Str(p)) => unsafe {
             let p = *p;
             for (j, &b) in field.iter().enumerate() {
-                *p.add(j) = b as libc::c_char;
+                *p.add(j) = b;
             }
             *p.add(field.len()) = 0;
         },

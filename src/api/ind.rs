@@ -60,13 +60,13 @@ pub fn perror_(prefix: Option<&CStr>) {
 /// `prefix` must be null or point to a NUL-terminated string that is
 /// valid for reads up to and including its NUL and is not modified
 /// during the call.
-pub unsafe fn perror(prefix: *const libc::c_char) {
+pub unsafe fn perror(prefix: *const u8) {
     let p = if prefix.is_null() {
         None
     } else {
         // SAFETY: non-null, so the caller guarantees a valid,
         // unmodified NUL-terminated string.
-        Some(unsafe { CStr::from_ptr(prefix) })
+        Some(unsafe { CStr::from_ptr(prefix.cast()) })
     };
     perror_(p);
 }

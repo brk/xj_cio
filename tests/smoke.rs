@@ -69,7 +69,7 @@ fn fprintf_renders_int_and_string() {
     let r = unsafe { fprintf(
         fp,
         &cstr("%d %s\n"),
-        &[Arg::I(42), Arg::S(s.as_ptr())],
+        &[Arg::I(42), Arg::S(s.as_ptr().cast())],
     ) };
     assert!(r > 0);
     fclose(fp);
@@ -551,22 +551,21 @@ fn fread_into_uninitialized_buffer() {
 #[test]
 fn fgets_leaves_bytes_after_the_terminator_untouched() {
     let (fp, path) = read_fixture("xj_cio_fgets_tail.txt", b"ab\ncd");
-    let mut buf = [b'#' as libc::c_char; 8];
+    let mut buf = [b'#'; 8];
     // SAFETY: the destination is a live local array of length `n`.
     let r = unsafe { fgets(buf.as_mut_ptr(), buf.len() as libc::c_int, fp) };
     assert_eq!(r, buf.as_mut_ptr());
-    assert_eq!(buf.map(|c| c as u8), *b"ab\n\0####");
+    assert_eq!(buf, *b"ab\n\0####");
     fclose(fp);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn tmpnam_leaves_bytes_after_the_name_untouched() {
-    let mut buf = [b'#' as libc::c_char; L_tmpnam];
+    let mut buf = [b'#'; L_tmpnam];
     // SAFETY: the destination is a live local array of `L_tmpnam` bytes.
     let r = unsafe { tmpnam(buf.as_mut_ptr()) };
     assert_eq!(r, buf.as_mut_ptr());
-    let bytes = buf.map(|c| c as u8);
-    let len = bytes.iter().position(|&b| b == 0).unwrap();
-    assert!(bytes[len + 1..].iter().all(|&b| b == b'#'));
+    let len = buf.iter().position(|&b| b == 0).unwrap();
+    assert!(buf[len + 1..].iter().all(|&b| b == b'#'));
 }

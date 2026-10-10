@@ -136,7 +136,7 @@ pub unsafe fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) 
 
 /// `open_memstream(*bufp, *sizep)` is not implemented in v1; returns a
 /// null handle with `errno = ENOSYS`.
-pub fn open_memstream(_bufp: *mut *mut libc::c_char, _sizep: *mut libc::size_t) -> FILE_ptr {
+pub fn open_memstream(_bufp: *mut *mut u8, _sizep: *mut libc::size_t) -> FILE_ptr {
     errno::set(libc::ENOSYS);
     std::ptr::null()
 }

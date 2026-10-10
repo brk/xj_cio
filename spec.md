@@ -90,6 +90,8 @@ pub fn ferror(f: FILE_ptr) -> c_int;
 
 The handle-based signatures are chosen over Rust-native (`&mut Stream`) ones to keep mechanical translation close to the original source: every C `FILE *f` becomes a Rust `f: FILE_ptr`, and every `f == NULL` test becomes `f.is_null()`.
 
+C `char *` and `const char *` parameters and returns become `*mut u8` and `*const u8`, never `libc::c_char`. Examples are the buffers of `fgets`, `snprintf`, `tmpnam` and `setvbuf`, `*lineptr` in `getline`, the strings of `perror` and `freopen`, and `Arg::S` / `OutArg::Str`. Bytes are what the library reads and writes, and `u8` matches the safe siblings' `&[u8]` and `CStrDest` without casts. It also avoids `c_char`'s platform-dependent signedness. A pointer obtained from `CStr::as_ptr` or `CString::as_ptr` (which return `*const c_char`) is passed as `p.cast()`.
+
 Where a POSIX signature takes a raw buffer pointer, the raw version is an `unsafe fn` whose `# Safety` section states the caller's contract (§7.1), and a safe sibling with a trailing underscore takes Rust types instead: `fread_`, `fwrite_`, `fmemopen_`, `perror_`, `freopen_`, and the string functions of §8 (`fgets_`, `snprintf_`, `tmpnam_`, `ctermid_`, `getline_`, `getdelim_`). The two always share one implementation. Usually the raw version wraps its pointer and delegates to the sibling. Where the raw buffer may be uninitialized, both instead call a common core that writes only the bytes C writes (§7.1).
 
 The choice of `*const _File` is still compatible with the safety story (§7): although the handle is pointer-typed, it is not a real pointer into our data structures. The `_File` type is just an opaque placeholder, and the pointer bits are synthesized from slotmap keys rather than borrowed from a live `FILE` allocation. See §4.3.
@@ -524,7 +526,7 @@ Semantics:
 
 ### 8.3 scanf: `OutArg::Buf`
 
-`OutArg<'a>` has a checked string variant, `Buf(CStrDest<'a>)`, alongside the unchecked raw `Str(*mut c_char)`. Because `Buf` borrows mutably, `OutArg` is not `Copy`, and the scanf family takes `&mut [OutArg<'_>]`.
+`OutArg<'a>` has a checked string variant, `Buf(CStrDest<'a>)`, alongside the unchecked raw `Str(*mut u8)`. Because `Buf` borrows mutably, `OutArg` is not `Copy`, and the scanf family takes `&mut [OutArg<'_>]`.
 
 Where C would overflow the buffer, a `Buf` conversion fails instead:
 

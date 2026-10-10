@@ -43,7 +43,7 @@ pub fn fflush_all() -> core::ffi::c_int {
 /// always owns the backing buffer.
 pub fn setvbuf(
     t: FILE_ptr,
-    _buf: *mut libc::c_char,
+    _buf: *mut u8,
     mode: libc::c_int,
     size: libc::size_t,
 ) -> core::ffi::c_int {
@@ -128,7 +128,7 @@ pub fn setvbuf(
 
 /// `setbuf(fp, buf)`. Equivalent to `setvbuf(fp, buf, _IOFBF, BUFSIZ)`
 /// when `buf != NULL`, else `setvbuf(fp, NULL, _IONBF, 0)`.
-pub fn setbuf(t: FILE_ptr, buf: *mut libc::c_char) {
+pub fn setbuf(t: FILE_ptr, buf: *mut u8) {
     if buf.is_null() {
         let _ = setvbuf(t, std::ptr::null_mut(), _IONBF, 0);
     } else {

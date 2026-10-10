@@ -188,13 +188,13 @@ pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
 /// `path` must be null or point to a NUL-terminated string that is
 /// valid for reads up to and including its NUL and is not modified
 /// during the call.
-pub unsafe fn freopen(path: *const libc::c_char, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
+pub unsafe fn freopen(path: *const u8, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
     let p = if path.is_null() {
         None
     } else {
         // SAFETY: non-null, so the caller guarantees a valid,
         // unmodified NUL-terminated string.
-        Some(unsafe { CStr::from_ptr(path) })
+        Some(unsafe { CStr::from_ptr(path.cast()) })
     };
     freopen_(p, mode, t)
 }
@@ -320,12 +320,12 @@ pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
 ///   no access through a pointer to it may overlap the call).
 ///
 /// As in C, only the name and its terminator are written.
-pub unsafe fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
+pub unsafe fn tmpnam(buf: *mut u8) -> *mut u8 {
     // Static buffer when the user passes NULL.
-    static mut STATIC_BUF: [libc::c_char; crate::L_tmpnam] = [0; crate::L_tmpnam];
+    static mut STATIC_BUF: [u8; crate::L_tmpnam] = [0; crate::L_tmpnam];
 
     let dst = if buf.is_null() {
-        (&raw mut STATIC_BUF) as *mut libc::c_char
+        (&raw mut STATIC_BUF).cast::<u8>()
     } else {
         buf
     };
@@ -337,7 +337,7 @@ pub unsafe fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
         // that size and which the caller guarantees nothing else
         // touches during the call. `name` is a distinct local.
         Some(len) => unsafe {
-            std::ptr::copy_nonoverlapping(name.as_ptr(), dst as *mut u8, len + 1);
+            std::ptr::copy_nonoverlapping(name.as_ptr(), dst, len + 1);
             dst
         },
         None => std::ptr::null_mut(),
@@ -415,10 +415,10 @@ pub fn ctermid_(dst: CStrDest<'_>) -> Option<usize> {
 ///   no access through a pointer to it may overlap the call).
 ///
 /// As in C, only the path and its terminator are written.
-pub unsafe fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
-    static mut CTERMID: [libc::c_char; crate::L_ctermid] = [0; crate::L_ctermid];
+pub unsafe fn ctermid(buf: *mut u8) -> *mut u8 {
+    static mut CTERMID: [u8; crate::L_ctermid] = [0; crate::L_ctermid];
     let dst = if buf.is_null() {
-        (&raw mut CTERMID) as *mut libc::c_char
+        (&raw mut CTERMID).cast::<u8>()
     } else {
         buf
     };
@@ -426,7 +426,7 @@ pub unsafe fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
     match ctermid_((&mut path).into()) {
         // SAFETY: as in `tmpnam`, with `L_ctermid` and `CTERMID`.
         Some(len) => unsafe {
-            std::ptr::copy_nonoverlapping(path.as_ptr(), dst as *mut u8, len + 1);
+            std::ptr::copy_nonoverlapping(path.as_ptr(), dst, len + 1);
             dst
         },
         None => std::ptr::null_mut(),
