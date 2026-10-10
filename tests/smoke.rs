@@ -24,7 +24,7 @@ fn fopen_fwrite_fclose_fopen_fread_roundtrip() {
     let fp = fopen(&p, &cstr("rb"));
     assert!(!fp.is_null());
     let mut buf = [0u8; 32];
-    // SAFETY: the destination is a live, initialized local array of the given length.
+    // SAFETY: the destination is a live local array of the given length.
     let n = unsafe { fread(buf.as_mut_ptr(), 1, buf.len(), fp) };
     assert_eq!(n, data.len());
     assert_eq!(&buf[..n], data);
@@ -449,7 +449,7 @@ fn fclose_while_holding_stream_guard_does_not_panic() {
     let fp2 = fopen(&p, &cstr("rb"));
     assert!(!fp2.is_null());
     let mut buf = [0u8; 16];
-    // SAFETY: the destination is a live, initialized local array of the given length.
+    // SAFETY: the destination is a live local array of the given length.
     let n = unsafe { fread(buf.as_mut_ptr(), 1, buf.len(), fp2) };
     assert_eq!(&buf[..n], b"hello");
     fclose(fp2);
@@ -499,4 +499,74 @@ fn stream_guard_eof_indicator_after_drain() {
     }
     fclose(fp);
     let _ = std::fs::remove_file(&path);
+}
+
+/// Opens a fresh temp file holding `contents` for reading.
+fn read_fixture(name: &str, contents: &[u8]) -> (FILE_ptr, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, contents).unwrap();
+    let fp = fopen(&cstr(path.to_str().unwrap()), &cstr("rb"));
+    assert!(!fp.is_null());
+    (fp, path)
+}
+
+#[test]
+fn fread_short_read_leaves_unread_elements_untouched() {
+    let (fp, path) = read_fixture("xj_cio_fread_short.bin", b"abcdef");
+    let mut buf = [b'#'; 10];
+    // SAFETY: the destination is a live local array of the given length.
+    let n = unsafe { fread(buf.as_mut_ptr(), 2, 5, fp) };
+    assert_eq!(n, 3);
+    assert_eq!(&buf, b"abcdef####");
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fread_into_uninitialized_buffer() {
+    use std::mem::MaybeUninit;
+    // Larger than BUFSIZ, so the direct-read path runs.
+    let data: Vec<u8> = (0..3 * BUFSIZ + 17).map(|i| (i % 251) as u8).collect();
+    for unbuffered in [false, true] {
+        let (fp, path) = read_fixture("xj_cio_fread_uninit.bin", &data);
+        if unbuffered {
+            assert_eq!(setvbuf(fp, std::ptr::null_mut(), _IONBF, 0), 0);
+        }
+        let mut buf: Vec<MaybeUninit<u8>> = Vec::with_capacity(data.len() + 5);
+        // SAFETY: the spare capacity is valid for writes of its length;
+        // `fread` accepts uninitialized memory.
+        let n = unsafe { fread(buf.as_mut_ptr().cast(), 1, data.len() + 5, fp) };
+        assert_eq!(n, data.len());
+        // SAFETY: `fread` initialized the first `n` bytes.
+        unsafe { buf.set_len(n) };
+        // SAFETY: as above.
+        let got: Vec<u8> = buf.iter().map(|b| unsafe { b.assume_init() }).collect();
+        assert_eq!(got, data);
+        assert_eq!(feof(fp), 1);
+        fclose(fp);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[test]
+fn fgets_leaves_bytes_after_the_terminator_untouched() {
+    let (fp, path) = read_fixture("xj_cio_fgets_tail.txt", b"ab\ncd");
+    let mut buf = [b'#' as libc::c_char; 8];
+    // SAFETY: the destination is a live local array of length `n`.
+    let r = unsafe { fgets(buf.as_mut_ptr(), buf.len() as libc::c_int, fp) };
+    assert_eq!(r, buf.as_mut_ptr());
+    assert_eq!(buf.map(|c| c as u8), *b"ab\n\0####");
+    fclose(fp);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn tmpnam_leaves_bytes_after_the_name_untouched() {
+    let mut buf = [b'#' as libc::c_char; L_tmpnam];
+    // SAFETY: the destination is a live local array of `L_tmpnam` bytes.
+    let r = unsafe { tmpnam(buf.as_mut_ptr()) };
+    assert_eq!(r, buf.as_mut_ptr());
+    let bytes = buf.map(|c| c as u8);
+    let len = bytes.iter().position(|&b| b == 0).unwrap();
+    assert!(bytes[len + 1..].iter().all(|&b| b == b'#'));
 }

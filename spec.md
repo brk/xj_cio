@@ -9,7 +9,7 @@ A faithful, mostly-safe Rust re-implementation of C's `<stdio.h>`, designed as a
 ### 1.1 Goals
 
 1. **Semantic fidelity.** Implement the 57 stream-oriented functions of POSIX 2024 `<stdio.h>` such that programs ported by mechanical translation behave indistinguishably from their C originals on the cases that matter (buffering visible to other parts of the program, error indicator timing, position tracking with `ungetc`, `freopen` identity preservation, `flockfile` reentrancy, etc.).
-2. **Safety.** The public API is safe Rust except where the C semantics fundamentally require otherwise (raw fd ingestion, C-variadic format functions). A program that calls only the safe subset cannot trigger UB through the library.
+2. **Safety.** The public API is safe Rust except where the C semantics fundamentally require otherwise: raw fd ingestion, raw buffer and C-string pointers, and format arguments that carry pointers. Those entry points are `unsafe fn`s with documented preconditions (§7.1). A program that calls only the safe subset cannot trigger UB through the library.
 3. **FORCRAT-completeness.** All eleven categories that FORCRAT identifies as "unsupported" become tractable when this library is the translation target. The library handles them; the translator's job collapses to syntactic rewriting.
 4. **Coexistence with `std::io`.** For the standard streams (`stdin`/`stdout`/`stderr`), the library shares buffering and locking with `std::io::Std{in,out,err}`, so `print!` and `our_fprintf(our_stdout, ...)` interleave correctly and a flush in either system propagates to the other.
 5. **Translator-friendliness.** The public surface mirrors libc's signatures (modulo Rust types for buffers and error returns) so that a rewriter can produce calls one-to-one without complex shape changes.
@@ -82,14 +82,15 @@ pub enum _File {}
 pub type FILE_ptr = *const _File;     // null means "no file" (replaces NULL)
 
 pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr;
-pub fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
+pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
+pub fn fread_(dst: &mut [u8], f: FILE_ptr) -> usize;
 pub fn ferror(f: FILE_ptr) -> c_int;
 // ...
 ```
 
 The handle-based signatures are chosen over Rust-native (`&mut Stream`) ones to keep mechanical translation close to the original source: every C `FILE *f` becomes a Rust `f: FILE_ptr`, and every `f == NULL` test becomes `f.is_null()`.
 
-Where a POSIX signature takes a raw buffer pointer, a safe sibling with a trailing underscore takes Rust types instead: `fread_`, `fwrite_`, `fmemopen_`, `perror_`, `freopen_`, and the string functions of §8 (`fgets_`, `snprintf_`, `tmpnam_`, `ctermid_`, `getline_`, `getdelim_`). Where practical, the raw version wraps its pointer and delegates to the sibling, so both share one implementation.
+Where a POSIX signature takes a raw buffer pointer, the raw version is an `unsafe fn` whose `# Safety` section states the caller's contract (§7.1), and a safe sibling with a trailing underscore takes Rust types instead: `fread_`, `fwrite_`, `fmemopen_`, `perror_`, `freopen_`, and the string functions of §8 (`fgets_`, `snprintf_`, `tmpnam_`, `ctermid_`, `getline_`, `getdelim_`). The two always share one implementation. Usually the raw version wraps its pointer and delegates to the sibling. Where the raw buffer may be uninitialized, both instead call a common core that writes only the bytes C writes (§7.1).
 
 The choice of `*const _File` is still compatible with the safety story (§7): although the handle is pointer-typed, it is not a real pointer into our data structures. The `_File` type is just an opaque placeholder, and the pointer bits are synthesized from slotmap keys rather than borrowed from a live `FILE` allocation. See §4.3.
 
@@ -411,16 +412,45 @@ Default is `Shared`. The translator emits a warning when it sees `setvbuf(stdout
 
 ### 7.1 Unsafe surface
 
-The library's `unsafe` blocks are confined to the following sites:
+Every `unsafe fn` has a `# Safety` section stating its preconditions, and every `unsafe` block has a `SAFETY` comment saying why they hold.
 
-1. **`fdopen`** ingests a raw fd: `unsafe { OwnedFd::from_raw_fd(dup(fd)) }`. The caller asserts the fd is valid; we `dup` so our `Drop` does not close a caller-managed fd.
-2. **Inherited stdio fd materialization** for `StdoutBypass` etc.: `unsafe { OwnedFd::from_raw_fd(dup(libc::STDOUT_FILENO)) }`. Same justification.
-3. **C-variadic implementations of `vfprintf`/`vfscanf`**: walking a `VaList` is `unsafe` regardless of context. Encapsulated in the format engine.
-4. **Pointer-typed I/O buffers**: `fread`/`fwrite` take `*mut u8`/`*const u8` and a length; these dereferences are `unsafe` and rely on the caller's contract that the buffer is valid for the given length, exactly as libc requires.
+**Caller-facing: `unsafe fn` entry points.** These are the only ways translated code can reach UB through the library. The translator emits them inside `unsafe` blocks.
+
+1. **Raw fd ingestion.** `fdopen(fd, mode)` requires `fd` to be an open descriptor the caller may use for the duration of the call (I/O safety, as for a `BorrowedFd`). The stream wraps a `dup` of it, so our `Drop` never closes a caller-managed fd. The `dup` result is checked before `File::from_raw_fd`.
+2. **Buffer pointers.** `fread`, `fwrite`, `fgets`, `snprintf`, `sprintf`, `fgetpos`, `fsetpos`, and `tmpnam`/`ctermid` with a non-null buffer require the buffer to be valid for the length C implies, and not accessed through any other pointer or reference during the call.
+   - **Destinations may be uninitialized.** That covers `fread`, `fgets`, `snprintf`, `sprintf`, `tmpnam` and `ctermid`. Each one writes exactly the bytes C specifies and leaves the rest untouched. C gives no licence to write elsewhere: for example, `fread` may only make a *partial* final element indeterminate (C11 §7.21.8.1). So these functions never zero-fill a buffer just so they can borrow it as `&mut [u8]`:
+     - **`fread`** borrows the buffer as `&mut [MaybeUninit<u8>]` and copies in only the bytes read. Large requests that would read directly into a caller's initialized slice instead go through a scratch buffer of at most 64 KiB per read. That scratch request is never larger than the remaining request, so unbuffered streams never consume extra input.
+     - **`fgets`** shares its read loop with `fgets_` and writes each byte, and the NUL, through the raw pointer.
+     - **`tmpnam` and `ctermid`** generate the name in a local array and copy out only the name and its NUL.
+     - **`snprintf` and `sprintf`** borrow only the `min(n, len + 1)` bytes that they then overwrite completely.
+   - **Sources must be initialized.** `fwrite` and `fsetpos` read the caller's bytes. `fsetpos` expects an `fpos_t` filled in by `fgetpos`, which stores the offset in its first 8 bytes. A compile-time assertion checks that `fpos_t` is at least that large.
+3. **C-string pointers.** `perror` and `freopen` accept a null pointer or a valid NUL-terminated string.
+4. **`getline` / `getdelim`.** `lineptr` and `n` must be valid for reads and writes. `*lineptr` must be null or a live `malloc`-family allocation of at least `*n` bytes. As POSIX specifies, `*n` is ignored when `*lineptr` is null.
+5. **Static result buffers.** `tmpnam(NULL)` and `ctermid(NULL)` write a shared static buffer, as in C. Concurrent calls, or overlapping use of a previously returned pointer, are a data race. That is the caller's contract.
+6. **`fmemopen` over a caller's buffer.** The buffer must stay valid for reads and writes of `size` initialized bytes for as long as the stream may touch it. That means until `fclose`, `pclose` or `freopen` returns, or until program exit and the `atexit` flush if the stream is never closed. One case extends this further. If the closing thread holds a `StreamGuard` on the stream, `fclose` defers its flush. The buffer must then stay valid until that guard drops and any operations other threads had already started have returned. Between operations the caller may access the buffer, as C programs do after `fflush`, but not during one. This contract is exactly the invariant on `MemStorage::User` that lets the safe `MemBacking::slice`/`slice_mut` build slices over the buffer. The owned-buffer path (`fmemopen_`, or `fmemopen` with a null buffer) needs no contract.
+7. **Format arguments.** The printf and scanf families take `&[Arg]` / `&mut [OutArg]` rather than a `VaList`. `Arg::S`, `Arg::OutN` and the raw `OutArg` variants (`Int` … `Double`, `Str`) are plain pointers that safe code can construct, and the format engine dereferences them. So every function that runs the engine is `unsafe`: `fprintf`, `fprintfb`, `vfprintf`, `printf`, `vprintf`, `snprintf`, `sprintf`, `snprintf_`, and `fscanf`, `vfscanf`, `scanf`, `vscanf`. The exact requirements are documented once, under "Pointer validity" on `Arg` and `OutArg`. `snprintf_` is unsafe only because of its `args`; its destination is checked. `Arg` and `OutArg` are `Send + Sync` via `unsafe impl`. That is sound because moving or sharing them accesses nothing; only the unsafe functions above dereference them.
+
+**Internal.** These are not visible to callers.
+
+8. **Lifetime-extended lock guards.** `StreamGuard` and the per-thread `flockfile` stack store a `ReentrantMutexGuard`, and `StreamGuard` also stores a `RefMut`, each transmuted to `'static`. This is sound because:
+   - each sits next to the `Arc<FILE>` that owns the mutex, and that `Arc` keeps the heap-allocated `FILE` from moving or being freed;
+   - explicit drop order releases the `RefMut`, then the guard, then the `Arc`;
+   - the guard type is `!Send`, so it is always released on the thread that acquired it.
+9. **Inherited stdio fd materialization.** `setvbuf` in `StdioMode::Bypass` calls `Handle::file_from_dup(STD*_FILENO)`, an `unsafe fn` with the same contract as `fdopen`. The standard descriptors are always borrowable, which std also assumes in `impl AsFd for Stdout`. If `dup` fails, `setvbuf` returns -1 with `errno` set rather than wrapping an invalid fd.
+10. **Small libc calls:**
+    - `atexit` registration, whose handler catches panics and so never unwinds into libc;
+    - the `errno` mirror through `__errno_location`;
+    - `getpid`;
+    - the `popen` pipe fd hand-off into `File`;
+    - `strerror_r` into a local buffer for `perror_`, never `strerror`, whose static buffer another thread may overwrite.
+11. **scanf numeric fields.** These use `str::from_utf8_unchecked` over buffers that the scanner fills only with ASCII bytes.
 
 Notably absent from this list: anything to do with `FILE_ptr` itself. Handle encode/decode and slotmap lookup are entirely safe Rust (`ptr::without_provenance` and `.addr()`), and the translated code never has access to a real pointer into our state.
 
-Total unsafe LOC is expected to be under 200 lines, each with a SAFETY comment citing the invariant.
+`tests/smoke.rs` checks the C-conformance points above:
+- a short `fread` leaves the unread elements untouched;
+- `fread` into a truly uninitialized buffer larger than `BUFSIZ`, on buffered and unbuffered streams;
+- `fgets` and `tmpnam` leave the bytes after their NUL untouched.
 
 ### 7.2 Threat model
 
@@ -434,14 +464,14 @@ Three categories of misbehavior from the translated program:
 
 - **(1) is fully caught.** Every entry point begins with a slotmap decode + lookup. Handles that were never issued, or whose generation is stale because the slot has been freed (and possibly reissued), produce `EBADF` deterministically. No state is touched, no real pointer is dereferenced, no UB.
 - **(2) is impossible by construction.** The translated code holds opaque `*const _File` handles, but they are not pointers to an exposed `_File` object or to any live internal allocation. The library does not export the layout of `_File` or `FILE`, does not provide `sizeof(FILE)`, and does not return pointers to its internal `Arc<FILE>` / `State`. A C-side `memset` or integer cast on a `FILE_ptr` only scribbles on the handle bits; the next call simply produces `EBADF` unless those bits happen to name a currently-live slot key.
-- **(3) produces defined error returns**, never UB. Closing twice: the second `fclose` finds an empty slot. Reading from a write-only stream: the `OpenMode` check fails inside the safe Rust state machine. Wrong buffer length: that's the caller's contract on the `*mut u8`, same as libc. The safe siblings of §8 take sized destinations instead, and turn what would be an overflow into an error return or a bounds-check panic.
+- **(3) produces defined error returns**, never UB. Closing twice: the second `fclose` finds an empty slot. Reading from a write-only stream: the `OpenMode` check fails inside the safe Rust state machine. Wrong buffer length: that's the caller's contract on the raw pointer, same as libc, and is only reachable through the `unsafe fn` entry points of §7.1. The safe siblings take sized destinations instead, and turn what would be an overflow into an error return or a bounds-check panic.
 
-Stronger stated: **a program that calls only the safe entry points, with valid `*mut u8` buffers, cannot trigger UB through this library.** The remaining unsafe entry points (`fdopen`, the variadic format functions) are the inherent FFI boundary; the translator marks them with `unsafe` blocks at the call site, and the translation still localizes the unsafety to those few sites instead of dispersing it across every stdio call.
+Stronger stated: **a program that calls only the safe entry points cannot trigger UB through this library.** The `unsafe fn` entry points of §7.1 are the inherent FFI boundary: raw fds, raw buffer and string pointers, and pointer-carrying format arguments. The translator marks their calls with `unsafe` blocks, so the translation still localizes the unsafety to those sites instead of dispersing it across every stdio call. Code that can use the safe siblings sheds the unsafety entirely.
 
 ### 7.4 What can still go wrong
 
 - **Logic errors** in the translated program produce defined error returns rather than UB, but the program is still buggy. Tools like static analysis or runtime tracing can find these; the library itself just refuses to misbehave.
-- **`fdopen` and variadic format** require `unsafe` at the call site; the translator emits these with `unsafe` blocks. A garbage fd or a malformed `va_list` is UB and not detectable by the library.
+- **The `unsafe fn` entry points** of §7.1 require `unsafe` at the call site; the translator emits these with `unsafe` blocks. Violating their contracts is UB and not detectable by the library, exactly as in C. Examples are a garbage fd, an undersized buffer, a dangling `Arg::S`, or an `fmemopen` buffer freed while the stream is open.
 - **Filesystem-level races** (TOCTOU on the path passed to `fopen`) are inherent to the OS and not addressable here.
 - **Slow `fclose` followed by `fopen` reusing the slot** can in principle produce a "false-positive valid handle": if a stale alias's encoded `(slot, gen)` value happens to match a *future* `(slot, gen)` after wraparound of the 32-bit generation counter, lookup would succeed and the operation would target the wrong stream. Slotmap uses a 32-bit generation field; for wraparound to occur, the same slot must be `fclose`d and `fopen`d 2³² times. This is not a practical concern, but is documented for completeness and can be hardened by widening the generation field if a concrete adversary model demands it.
 
@@ -490,7 +520,7 @@ Semantics:
 - **`fgets_(dst, f) -> Option<usize>`** behaves as `fgets(buf, dst.c_size(), f)`. It returns the number of bytes stored before the terminator. It returns `None` on EOF before any byte, on error, or when `c_size()` is zero, leaving `dst` unchanged on EOF.
 - **`snprintf_(dst, fmt, args) -> c_int`** is `snprintf(buf, dst.c_size(), …)` for runtime formats. Literal formats should use `xj_cfmt::csnprintf!`.
 - **`tmpnam_(dst)` and `ctermid_(dst)` -> `Option<usize>`** write the whole name and return its length. If it does not fit, they fail with `ERANGE` and leave `dst` untouched, because a truncated path names a different file. `c_size() >= L_tmpnam` (respectively `L_ctermid`) always suffices; generated temporary names are at most `L_tmpnam - 1` bytes.
-- **The raw versions** (`fgets`, `snprintf`, `sprintf`, `tmpnam`, `ctermid`) wrap their buffer in a `CStrDest` and delegate. `sprintf`'s unbounded size borrows only the bytes actually written.
+- **The raw versions** (`fgets`, `snprintf`, `sprintf`, `tmpnam`, `ctermid`) are `unsafe fn`s that accept uninitialized buffers and write exactly the bytes C writes (§7.1). `snprintf` and `sprintf` wrap the `min(n, len + 1)` bytes they fully overwrite in a `CStrDest` and delegate. `sprintf`'s unbounded size therefore borrows only the bytes actually written. `fgets` shares its read loop with `fgets_` and writes through the raw pointer. `tmpnam` and `ctermid` call their sibling on a local array and copy out the name and its NUL.
 
 ### 8.3 scanf: `OutArg::Buf`
 
@@ -510,7 +540,7 @@ Where C would overflow the buffer, a `Buf` conversion fails instead:
 - **Embedded NULs.** As in C, the return value is the line's length. A line containing NUL bytes is stored whole, but `line.len()` stops at its first NUL.
 - **Leftover bytes.** Bytes after the new terminator are left unchanged.
 
-The raw `getline` and `getdelim` keep their `malloc`/`realloc` buffers. Those are owned by C's allocator and cannot become a `ZString`.
+The raw `getline` and `getdelim` keep their `malloc`/`realloc` buffers. Those are owned by C's allocator and cannot become a `ZString`. They are `unsafe fn`s (§7.1), and as in POSIX they ignore `*n` when `*lineptr` is null.
 
 ### 8.5 Formatting
 

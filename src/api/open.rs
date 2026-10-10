@@ -311,13 +311,15 @@ pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
 ///
 /// # Safety
 ///
-/// - If `buf` is non-null, it must be valid for reads and writes of
-///   `L_tmpnam` initialized bytes, not accessed through any other
+/// - If `buf` is non-null, it must be valid for writes of `L_tmpnam`
+///   bytes (which may be uninitialized), not accessed through any other
 ///   pointer or reference during the call.
 /// - If `buf` is null, the call writes the shared static buffer, as in
 ///   C. No other thread may call `tmpnam(NULL)` concurrently, and no
 ///   reference to that buffer from an earlier call may be live (and
 ///   no access through a pointer to it may overlap the call).
+///
+/// As in C, only the name and its terminator are written.
 pub unsafe fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
     // Static buffer when the user passes NULL.
     static mut STATIC_BUF: [libc::c_char; crate::L_tmpnam] = [0; crate::L_tmpnam];
@@ -327,14 +329,17 @@ pub unsafe fn tmpnam(buf: *mut libc::c_char) -> *mut libc::c_char {
     } else {
         buf
     };
-    // C requires `buf` to hold at least L_tmpnam bytes.
-    // SAFETY: a non-null `buf` is `L_tmpnam` initialized bytes owned by
-    // this call (caller's contract). Otherwise `dst` is `STATIC_BUF`,
-    // which is exactly `L_tmpnam` zero-initialized bytes, and the caller
-    // guarantees no other access to it overlaps this call.
-    let region = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, crate::L_tmpnam) };
-    match tmpnam_(region.into()) {
-        Some(_) => dst,
+    let mut name = [0u8; crate::L_tmpnam];
+    match tmpnam_((&mut name).into()) {
+        // SAFETY: `len < L_tmpnam`, so the copy stays within the
+        // `L_tmpnam` bytes at `dst`: a caller's `buf`, valid for
+        // unaliased writes per the contract, or `STATIC_BUF`, which is
+        // that size and which the caller guarantees nothing else
+        // touches during the call. `name` is a distinct local.
+        Some(len) => unsafe {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), dst as *mut u8, len + 1);
+            dst
+        },
         None => std::ptr::null_mut(),
     }
 }
@@ -401,13 +406,15 @@ pub fn ctermid_(dst: CStrDest<'_>) -> Option<usize> {
 ///
 /// # Safety
 ///
-/// - If `buf` is non-null, it must be valid for reads and writes of
-///   `L_ctermid` initialized bytes, not accessed through any other
+/// - If `buf` is non-null, it must be valid for writes of `L_ctermid`
+///   bytes (which may be uninitialized), not accessed through any other
 ///   pointer or reference during the call.
 /// - If `buf` is null, the call writes the shared static buffer, as in
 ///   C. No other thread may call `ctermid(NULL)` concurrently, and no
 ///   reference to that buffer from an earlier call may be live (and
 ///   no access through a pointer to it may overlap the call).
+///
+/// As in C, only the path and its terminator are written.
 pub unsafe fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
     static mut CTERMID: [libc::c_char; crate::L_ctermid] = [0; crate::L_ctermid];
     let dst = if buf.is_null() {
@@ -415,11 +422,13 @@ pub unsafe fn ctermid(buf: *mut libc::c_char) -> *mut libc::c_char {
     } else {
         buf
     };
-    // C requires `buf` to hold at least L_ctermid bytes.
-    // SAFETY: as in `tmpnam`, with `L_ctermid` and `CTERMID`.
-    let region = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, crate::L_ctermid) };
-    match ctermid_(region.into()) {
-        Some(_) => dst,
+    let mut path = [0u8; crate::L_ctermid];
+    match ctermid_((&mut path).into()) {
+        // SAFETY: as in `tmpnam`, with `L_ctermid` and `CTERMID`.
+        Some(len) => unsafe {
+            std::ptr::copy_nonoverlapping(path.as_ptr(), dst as *mut u8, len + 1);
+            dst
+        },
         None => std::ptr::null_mut(),
     }
 }

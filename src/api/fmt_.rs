@@ -131,9 +131,9 @@ pub unsafe fn snprintf_(mut dst: CStrDest<'_>, fmt: &CStr, args: &[Arg]) -> core
 /// - `args` must meet the requirements in [`Arg`]'s "Pointer validity"
 ///   section for the conversions in `fmt`.
 /// - If `buf` is non-null and `n > 0`, `buf` must be valid for reads
-///   and writes of `min(n, len + 1)` initialized bytes, where `len` is
-///   the formatted length (the return value). A buffer of `n` such
-///   bytes always suffices. The region must not be accessed through any
+///   and writes of `min(n, len + 1)` bytes (which may be
+///   uninitialized), where `len` is the formatted length (the return
+///   value). A buffer of `n` bytes always suffices. The region must not be accessed through any
 ///   other pointer or reference, including `fmt`, during the call.
 pub unsafe fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
     let bytes = fmt.to_bytes();
@@ -145,10 +145,15 @@ pub unsafe fn snprintf(buf: *mut libc::c_char, n: libc::size_t, fmt: &CStr, args
         // unbounded `n` never forms an oversized slice.
         let len = n.min(out.len() + 1);
         // SAFETY: `buf` is non-null with `n > 0`, so the caller
-        // guarantees `len == min(n, out.len() + 1)` initialized,
-        // unaliased bytes. All `args` accesses (including `%n` writes)
-        // finished above, before this borrow begins.
-        let region = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
+        // guarantees it is valid for writes of `len == min(n,
+        // out.len() + 1)` unaliased bytes. Zeroing them with a raw
+        // write initializes them for the slice (and is invisible, since
+        // `write_truncated` overwrites all `len`). All `args` accesses
+        // (including `%n` writes) finished above, before this borrow.
+        let region = unsafe {
+            std::ptr::write_bytes(buf as *mut u8, 0, len);
+            std::slice::from_raw_parts_mut(buf as *mut u8, len)
+        };
         CStrDest::from(region).write_truncated(&out);
     }
     out.len() as libc::c_int

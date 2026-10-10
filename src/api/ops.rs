@@ -6,6 +6,7 @@
 //! code).
 
 use std::io::SeekFrom;
+use std::mem::MaybeUninit;
 
 use crate::buffer::BufferPolicy;
 use crate::errno;
@@ -150,38 +151,113 @@ pub fn refill_buffer(state: &mut State) -> std::io::Result<()> {
     }
 }
 
+/// A destination for [`read_into_dest`]: either an initialized
+/// `[u8]` or an [`UninitDest`].
+pub trait ReadDest {
+    /// Total bytes the destination can take.
+    fn dest_len(&self) -> usize;
+    /// Store `src` at `at..at + src.len()`.
+    fn put(&mut self, at: usize, src: &[u8]);
+    /// Read from `handle` into the destination starting at `at`,
+    /// bypassing the stream buffer. Returns the bytes stored.
+    fn read_direct(&mut self, at: usize, handle: &mut Handle) -> std::io::Result<usize>;
+}
+
+impl ReadDest for [u8] {
+    fn dest_len(&self) -> usize {
+        self.len()
+    }
+    fn put(&mut self, at: usize, src: &[u8]) {
+        self[at..at + src.len()].copy_from_slice(src);
+    }
+    fn read_direct(&mut self, at: usize, handle: &mut Handle) -> std::io::Result<usize> {
+        handle.read(&mut self[at..])
+    }
+}
+
+/// A destination that may be uninitialized. Only bytes actually read
+/// are written; the rest keep whatever they held, as C's `fread`
+/// requires.
+pub struct UninitDest<'a> {
+    dst: &'a mut [MaybeUninit<u8>],
+    /// `Handle::read` needs initialized memory, so direct reads land
+    /// here first. Allocated on first use.
+    scratch: Vec<u8>,
+}
+
+impl<'a> UninitDest<'a> {
+    /// Largest direct read issued at once.
+    const SCRATCH_MAX: usize = 64 * 1024;
+
+    pub fn new(dst: &'a mut [MaybeUninit<u8>]) -> Self {
+        UninitDest { dst, scratch: Vec::new() }
+    }
+}
+
+impl ReadDest for UninitDest<'_> {
+    fn dest_len(&self) -> usize {
+        self.dst.len()
+    }
+    fn put(&mut self, at: usize, src: &[u8]) {
+        for (d, &b) in self.dst[at..at + src.len()].iter_mut().zip(src) {
+            d.write(b);
+        }
+    }
+    fn read_direct(&mut self, at: usize, handle: &mut Handle) -> std::io::Result<usize> {
+        let want = (self.dst.len() - at).min(Self::SCRATCH_MAX);
+        if self.scratch.len() < want {
+            self.scratch.resize(want, 0);
+        }
+        // Request no more than the caller asked for, so an unbuffered
+        // stream never consumes bytes beyond the request.
+        let n = handle.read(&mut self.scratch[..want])?;
+        let UninitDest { dst, scratch } = self;
+        for (d, &b) in dst[at..at + n].iter_mut().zip(&scratch[..n]) {
+            d.write(b);
+        }
+        Ok(n)
+    }
+}
+
 /// Read into a caller-supplied slice, honoring pushback and the
 /// internal read buffer. Returns the number of bytes delivered (may
 /// be less than `dst.len()` on EOF or short read; the caller decides
 /// whether to retry).
 pub fn read_into(state: &mut State, dst: &mut [u8]) -> std::io::Result<usize> {
+    read_into_dest(state, dst)
+}
+
+/// [`read_into`] for any [`ReadDest`]. Stores only the bytes it
+/// reads, front to back: `dst[..n]` for a returned `Ok(n)`, and on
+/// `Err` just those read before the error.
+pub fn read_into_dest<D: ReadDest + ?Sized>(state: &mut State, dst: &mut D) -> std::io::Result<usize> {
     switch_to_read(state)?;
+    let len = dst.dest_len();
     let mut written = 0;
 
-    while written < dst.len() {
+    while written < len {
         // Pushback first (LIFO). `ungetc` pushed in order, so we pop
         // from the end.
         if let Some(b) = state.pushback.pop() {
-            dst[written] = b;
+            dst.put(written, &[b]);
             written += 1;
             continue;
         }
         // Then buffered data.
         if state.buffer.cursor < state.buffer.fill {
             let avail = state.buffer.fill - state.buffer.cursor;
-            let take = avail.min(dst.len() - written);
-            dst[written..written + take]
-                .copy_from_slice(&state.buffer.data[state.buffer.cursor..state.buffer.cursor + take]);
+            let take = avail.min(len - written);
+            dst.put(written, &state.buffer.data[state.buffer.cursor..state.buffer.cursor + take]);
             state.buffer.cursor += take;
             written += take;
             continue;
         }
         // Nothing buffered and the request is at least as large as
-        // our buffer — read directly into the caller's slice (no
-        // double-copy).
-        let remaining = dst.len() - written;
+        // our buffer — read directly into the destination (no
+        // double-copy, except via `UninitDest`'s scratch).
+        let remaining = len - written;
         if state.buffer.capacity() == 0 || remaining >= state.buffer.capacity() {
-            match state.handle.read(&mut dst[written..]) {
+            match dst.read_direct(written, &mut state.handle) {
                 Ok(0) => {
                     state.eof = true;
                     break;

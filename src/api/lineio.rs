@@ -29,18 +29,28 @@ pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
         dst.terminate(0);
         return Some(0);
     }
+    let region = dst.region_mut();
+    let written = fgets_core(max, t, |i, b| region[i] = b)?;
+    dst.terminate(written);
+    Some(written)
+}
+
+/// Shared body of `fgets_` and `fgets`: reads up to `max` (> 0) bytes,
+/// stopping after `\n` or at EOF, and hands each to `put` with its
+/// index (`0..max`). Returns the count, or `None` on
+/// EOF-before-any-bytes or error.
+fn fgets_core(max: usize, t: FILE_ptr, mut put: impl FnMut(usize, u8)) -> Option<usize> {
     let got = ops::with_token(t, |s| {
         if !s.mode.readable() {
             errno::set(libc::EBADF);
             s.err = true;
             return None;
         }
-        let region = dst.region_mut();
         let mut written = 0usize;
         while written < max {
             match ops::read_one(s) {
                 Ok(Some(b)) => {
-                    region[written] = b;
+                    put(written, b);
                     written += 1;
                     if b == b'\n' {
                         break;
@@ -53,7 +63,6 @@ pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
         if written == 0 {
             return None;
         }
-        dst.terminate(written);
         Some(written)
     });
     got.flatten()
@@ -65,21 +74,33 @@ pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
 ///
 /// # Safety
 ///
-/// If `buf` is non-null and `n > 0`, `buf` must be valid for reads and
-/// writes of `n` bytes, all `n` of which must be initialized, and the
-/// region must not be accessed through any other pointer or reference
-/// for the duration of the call.
+/// If `buf` is non-null and `n > 0`, `buf` must be valid for writes of
+/// `n` bytes (which may be uninitialized), and the region must not be
+/// accessed through any other pointer or reference for the duration of
+/// the call.
+///
+/// As in C, only the bytes read and the terminator are written.
 pub unsafe fn fgets(buf: *mut libc::c_char, n: libc::c_int, t: FILE_ptr) -> *mut libc::c_char {
     if n <= 0 || buf.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: `buf` is non-null and `n > 0`, so the caller guarantees
-    // `n` initialized bytes at `buf`, exclusively ours for this call.
-    let dst = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, n as usize) };
-    match fgets_(dst.into(), t) {
-        Some(_) => buf,
-        None => std::ptr::null_mut(),
-    }
+    let dst = buf as *mut u8;
+    let max = n as usize - 1;
+    let written = if max == 0 {
+        // Per POSIX: write only the NUL.
+        0
+    } else {
+        // SAFETY: `fgets_core` passes indices `i < max < n`, and the
+        // caller guarantees `buf` is valid for unaliased writes of `n`
+        // bytes. A raw write needs no prior initialization.
+        match fgets_core(max, t, |i, b| unsafe { dst.add(i).write(b) }) {
+            Some(w) => w,
+            None => return std::ptr::null_mut(),
+        }
+    };
+    // SAFETY: `written <= max < n`; valid for writes as above.
+    unsafe { dst.add(written).write(0) };
+    buf
 }
 
 /// `fputs(s, fp)`. Writes the entire NUL-terminated string. Returns

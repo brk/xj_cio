@@ -110,7 +110,7 @@ fn snprintf_into_a_zstr_uses_every_writable_byte() {
     assert_eq!(owned.as_buffer(), b"12\07\0");
 
     let mut raw = [b'x'; 4];
-    // SAFETY: the destination is a live, initialized local array of length `n`.
+    // SAFETY: the destination is a live local array of length `n`.
     let n = unsafe { snprintf(raw.as_mut_ptr() as *mut libc::c_char, raw.len(), c"%d", &[Arg::I(12345)]) };
     assert_eq!((n, &raw), (5, b"123\0"));
     // SAFETY: the destination is a live array large enough for the output and its NUL.
