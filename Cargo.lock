@@ -134,8 +134,13 @@ name = "xj_cfmt"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "xj_cfmt_core",
  "xj_cfmt_macros",
 ]
+
+[[package]]
+name = "xj_cfmt_core"
+version = "0.1.0"
 
 [[package]]
 name = "xj_cfmt_macros"
@@ -144,6 +149,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+ "xj_cfmt_core",
 ]
 
 [[package]]

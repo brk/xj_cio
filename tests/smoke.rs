@@ -59,18 +59,12 @@ fn fgetc_ungetc_roundtrip() {
 
 #[test]
 fn fprintf_renders_int_and_string() {
-    use xj_cio::Arg;
     let path = std::env::temp_dir().join("xj_cio_printf.txt");
     let p = cstr(path.to_str().unwrap());
 
     let fp = fopen(&p, &cstr("w"));
     let s = cstr("world");
-    // SAFETY: each `Arg::S` points to a live NUL-terminated string.
-    let r = unsafe { fprintf(
-        fp,
-        &cstr("%d %s\n"),
-        &[Arg::I(42), Arg::S(s.as_ptr().cast())],
-    ) };
+    let r = xj_cio::fprintf_safe!(fp, c"%d %s\n", 42, s);
     assert!(r > 0);
     fclose(fp);
 

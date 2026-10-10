@@ -1,66 +1,17 @@
-//! `printf` / `fprintf` / `vprintf` / `vfprintf` and the `scanf`
-//! family. The translator marshals each variadic call into an `Arg`
-//! / `OutArg` slice.
+//! Pre-parsed C printing calls and the `scanf` family.
+//! Printing macros and plan APIs use xj_cfmt's common renderer; scanning
+//! retains its separate grammar and `OutArg` destinations.
 
 use std::ffi::CStr;
 
-use xj_zstr::CStrDest;
-
-use crate::errno;
-use crate::format::{run_printf, run_scanf};
 use crate::FILE_ptr;
+use crate::errno;
+use crate::format::run_scanf;
 
-pub use crate::format::{Arg, OutArg};
+pub use crate::format::OutArg;
+pub use xj_cfmt::printf::Arg;
 
 use super::ops;
-
-/// # Safety
-///
-/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-/// section for the conversions in `fmt`.
-pub unsafe fn fprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    // SAFETY: forwarded from the caller.
-    unsafe { fprintfb(t, fmt.to_bytes(), args) }
-}
-
-/// `fprintf` with the format as a byte slice (no NUL required).
-///
-/// # Safety
-///
-/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-/// section for the conversions in `fmt_bytes`.
-pub unsafe fn fprintfb(t: FILE_ptr, fmt_bytes: &[u8], args: &[Arg]) -> core::ffi::c_int {
-    // SAFETY: forwarded from the caller.
-    let r = ops::with_token(t, |s| unsafe { run_printf(s, fmt_bytes, args) });
-    r.unwrap_or(-1)
-}
-
-/// # Safety
-///
-/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-/// section for the conversions in `fmt`.
-pub unsafe fn vfprintf(t: FILE_ptr, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    // SAFETY: forwarded from the caller.
-    unsafe { fprintf(t, fmt, args) }
-}
-
-/// # Safety
-///
-/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-/// section for the conversions in `fmt`.
-pub unsafe fn printf(fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    // SAFETY: forwarded from the caller.
-    unsafe { fprintf(crate::api::stdio_::stdout(), fmt, args) }
-}
-
-/// # Safety
-///
-/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-/// section for the conversions in `fmt`.
-pub unsafe fn vprintf(fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    // SAFETY: forwarded from the caller.
-    unsafe { printf(fmt, args) }
-}
 
 /// `fscanf`. The slice is `&mut` because [`OutArg::Buf`] borrows its
 /// destination mutably.
@@ -103,77 +54,72 @@ pub unsafe fn vscanf(fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     unsafe { scanf(fmt, args) }
 }
 
-/// Safe sibling of `snprintf` for runtime (non-literal) formats.
-/// `dst.c_size()` plays the role of C's `n`. Writes as much of the
-/// output as fits, terminates it, and returns the full output length.
-/// Literal formats should use `xj_cfmt::csnprintf!` instead.
-///
-/// # Safety
-///
-/// `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-/// section for the conversions in `fmt`. (The destination itself is
-/// checked; only pointer-carrying `args` make this unsafe.)
-pub unsafe fn snprintf_(mut dst: CStrDest<'_>, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    let bytes = fmt.to_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    // SAFETY: forwarded from the caller.
-    unsafe { crate::format::format_to_vec(&mut out, bytes, args) };
-    dst.write_truncated(&out);
-    out.len() as libc::c_int
+/// Reports a shared parser failure using the printing profile's errno policy.
+pub fn format_error(e: xj_cfmt::cformat::Error) -> i32 {
+    errno::set(xj_cfmt::printf::Error::Format(e).errno());
+    -1
 }
-
-/// `sprintf`-style formatter into a caller-provided buffer.
-/// Returns the number of bytes that *would have been* written
-/// (excluding the NUL terminator).
-///
+/// Execute a pre-parsed call, including a va_list call.
 /// # Safety
-///
-/// - `args` must meet the requirements in [`Arg`]'s "Pointer validity"
-///   section for the conversions in `fmt`.
-/// - If `buf` is non-null and `n > 0`, `buf` must be valid for reads
-///   and writes of `min(n, len + 1)` bytes (which may be
-///   uninitialized), where `len` is the formatted length (the return
-///   value). A buffer of `n` bytes always suffices. The region must not be accessed through any
-///   other pointer or reference, including `fmt`, during the call.
-pub unsafe fn snprintf(buf: *mut u8, n: libc::size_t, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    let bytes = fmt.to_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    // SAFETY: forwarded from the caller.
-    unsafe { crate::format::format_to_vec(&mut out, bytes, args) };
-    if !buf.is_null() && n > 0 {
-        // Only the bytes actually written are borrowed, so `sprintf`'s
-        // unbounded `n` never forms an oversized slice.
-        let len = n.min(out.len() + 1);
-        // SAFETY: `buf` is non-null with `n > 0`, so the caller
-        // guarantees it is valid for writes of `len == min(n,
-        // out.len() + 1)` unaliased bytes. Zeroing them with a raw
-        // write initializes them for the slice (and is invisible, since
-        // `write_truncated` overwrites all `len`). All `args` accesses
-        // (including `%n` writes) finished above, before this borrow.
-        let region = unsafe {
-            std::ptr::write_bytes(buf, 0, len);
-            std::slice::from_raw_parts_mut(buf, len)
-        };
-        CStrDest::from(region).write_truncated(&out);
+/// Raw arguments must satisfy the common renderer's contracts.
+pub unsafe fn fprintf_plan(
+    t: FILE_ptr,
+    plan: &xj_cfmt::cformat::Plan<'_>,
+    args: &[Arg<'_>],
+) -> i32 {
+    crate::emit_c(t, unsafe { xj_cfmt::printf::render_plan(plan, args) })
+}
+/// # Safety
+/// As for [`fprintf_plan`].
+pub unsafe fn printf_plan(plan: &xj_cfmt::cformat::Plan<'_>, args: &[Arg<'_>]) -> i32 {
+    unsafe { fprintf_plan(crate::stdout(), plan, args) }
+}
+/// # Safety
+/// Raw arguments must satisfy the common renderer's contracts. `buf` must
+/// be writable for `min(size, rendered_length + 1)` bytes. A zero size writes
+/// nothing and permits a null buffer.
+pub unsafe fn snprintf_plan(
+    buf: *mut u8,
+    size: usize,
+    plan: &xj_cfmt::cformat::Plan<'_>,
+    args: &[Arg<'_>],
+) -> i32 {
+    unsafe {
+        xj_cfmt::printf::finish_raw(buf, Some(size), xj_cfmt::printf::render_plan(plan, args))
     }
-    out.len() as libc::c_int
 }
-
-/// `sprintf(buf, fmt, ...)`: `snprintf` with an unbounded size.
-///
 /// # Safety
-///
-/// As for [`snprintf`] with `n = SIZE_MAX`. In particular, a non-null
-/// `buf` must be valid for `len + 1` bytes, where `len` is the
-/// formatted length.
-pub unsafe fn sprintf(buf: *mut u8, fmt: &CStr, args: &[Arg]) -> core::ffi::c_int {
-    // SAFETY: forwarded from the caller.
-    unsafe { snprintf(buf, libc::size_t::MAX, fmt, args) }
+/// Raw arguments must satisfy the common renderer's contracts. `buf` must
+/// be writable for the complete rendered output and its NUL terminator.
+pub unsafe fn sprintf_plan(
+    buf: *mut u8,
+    plan: &xj_cfmt::cformat::Plan<'_>,
+    args: &[Arg<'_>],
+) -> i32 {
+    unsafe { xj_cfmt::printf::finish_raw(buf, None, xj_cfmt::printf::render_plan(plan, args)) }
 }
 
-/// Suppress unused-warning for errno when format engine doesn't need
-/// it directly here.
-#[allow(dead_code)]
-fn _touch_errno() {
-    errno::get();
+/// A pre-parsed call into guided storage.
+/// # Safety
+/// Raw arguments must satisfy the common renderer's contracts.
+pub unsafe fn snprintf_plan_<D: xj_cfmt::printf::Destination + ?Sized>(
+    dest: &mut D,
+    size: usize,
+    plan: &xj_cfmt::cformat::Plan<'_>,
+    args: &[Arg<'_>],
+) -> i32 {
+    xj_cfmt::printf::finish(dest, Some(size), unsafe {
+        xj_cfmt::printf::render_plan(plan, args)
+    })
+}
+/// # Safety
+/// As for [`snprintf_plan_`].
+pub unsafe fn sprintf_plan_<D: xj_cfmt::printf::Destination + ?Sized>(
+    dest: &mut D,
+    plan: &xj_cfmt::cformat::Plan<'_>,
+    args: &[Arg<'_>],
+) -> i32 {
+    xj_cfmt::printf::finish(dest, None, unsafe {
+        xj_cfmt::printf::render_plan(plan, args)
+    })
 }

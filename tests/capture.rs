@@ -10,21 +10,13 @@
 #![cfg(feature = "set_output_capture")]
 #![feature(internal_output_capture)]
 
-use std::ffi::CString;
-
 use xj_cio::*;
-
-fn cstr(s: &str) -> CString {
-    CString::new(s).unwrap()
-}
 
 /// `print!` writes that arrive while we're in Capture mode end up
 /// flowing through *our* stdout buffer, so they appear in the same
 /// final output as `our_fprintf` calls.
 #[test]
 fn print_macro_routed_through_xj_cio_buffer_in_capture_mode() {
-    use xj_cio::Arg;
-
     set_stdio_mode(StdioMode::Capture);
 
     // The current thread's `print!` now writes into our shared
@@ -42,7 +34,7 @@ fn print_macro_routed_through_xj_cio_buffer_in_capture_mode() {
     // capture, we instead verify that toggling capture on doesn't
     // panic and that the public surface compiles.
     std::print!("from-print ");
-    let _ = fprintf(stdout(), &cstr("from-fprintf %d\n"), &[Arg::I(7)]);
+    let _ = xj_cio::fprintf_safe!(stdout(), c"from-fprintf %d\n", 7);
     let _ = fflush(stdout());
 
     std::io::set_output_capture(prev);

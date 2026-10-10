@@ -9,28 +9,24 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(dead_code)]
 
-pub mod errno;
+mod api;
 mod atexit;
 mod buffer;
-mod handle;
-mod state;
-mod slots;
+pub mod errno;
 pub(crate) mod format;
-mod api;
+mod handle;
 mod print;
+mod slots;
+mod state;
 
-#[cfg(feature = "cfmt")]
 mod cfmt;
 
-#[cfg(feature = "cfmt")]
-pub use cfmt::CioSink;
+pub use cfmt::{CioSink, emit_c};
 
-#[cfg(feature = "cfmt")]
 #[doc(hidden)]
 pub use xj_cfmt as __cfmt;
 
 /// Formats through xj_cio's standard output stream.
-#[cfg(feature = "cfmt")]
 #[macro_export]
 macro_rules! cprintf {
     ($($tokens:tt)*) => {
@@ -39,7 +35,6 @@ macro_rules! cprintf {
 }
 
 /// Formats through xj_cio's standard error stream.
-#[cfg(feature = "cfmt")]
 #[macro_export]
 macro_rules! ceprintf {
     ($($tokens:tt)*) => {
@@ -48,7 +43,6 @@ macro_rules! ceprintf {
 }
 
 /// Formats through an xj_cio stream.
-#[cfg(feature = "cfmt")]
 #[macro_export]
 macro_rules! cfprintf {
     ($stream:expr, $($tokens:tt)*) => {
@@ -90,3 +84,46 @@ pub const _IONBF: libc::c_int = 2;
 pub const L_tmpnam: usize = 20;
 /// Maximum length of `ctermid` path string.
 pub const L_ctermid: usize = 9;
+
+/// Shared printing syntax and engine.
+pub use xj_cfmt::cformat;
+pub use xj_cfmt::printf::{Adapt, SafeAdapt};
+/// C buffer macros, sharing the stream renderer.
+pub use xj_cfmt::{
+    snprintf, snprintf_safe, snprintf_unchecked, sprintf, sprintf_safe, sprintf_unchecked,
+};
+
+/// C printf. Requires an unsafe caller for raw arguments.
+#[macro_export]
+macro_rules! printf {
+    ($fmt:expr $(, $arg:expr)* $(,)?) => {
+        $crate::fprintf!($crate::stdout(), $fmt $(, $arg)*)
+    };
+}
+/// C fprintf. Requires an unsafe caller for raw arguments.
+#[macro_export]
+macro_rules! fprintf {
+    ($stream:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {
+        $crate::emit_c($stream, $crate::__cfmt::printf::render(
+            $crate::__cfmt::CBytes::c_bytes(&$fmt), &[$($crate::Adapt::c_arg(&$arg)),*]))
+    };
+}
+/// Safe C printf, using borrowed string views and scalar arguments.
+#[macro_export]
+macro_rules! printf_safe {
+    ($fmt:expr $(, $arg:expr)* $(,)?) => {
+        $crate::fprintf_safe!($crate::stdout(), $fmt $(, $arg)*)
+    };
+}
+/// Safe C fprintf, using borrowed string views and scalar arguments.
+#[macro_export]
+macro_rules! fprintf_safe {
+    ($stream:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {{
+        $crate::__cfmt::__private::validate_safe_format!($fmt);
+        $crate::emit_c($stream, $crate::__cfmt::printf::render_safe(
+            $crate::__cfmt::CBytes::c_bytes(&$fmt), &[$($crate::SafeAdapt::safe_arg(&$arg)),*]))
+    }};
+}
+
+#[doc(hidden)]
+pub use libc as __libc;
