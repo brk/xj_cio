@@ -155,4 +155,12 @@ dependencies = [
  "slotmap",
  "smallvec",
  "xj_cfmt",
+ "xj_zstr",
+]
+
+[[package]]
+name = "xj_zstr"
+version = "0.1.0"
+dependencies = [
+ "xj_cfmt",
 ]

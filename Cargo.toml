@@ -17,7 +17,7 @@ default = []
 # calling the unstable `io::set_output_capture` hook. Requires a
 # nightly toolchain.
 set_output_capture = []
-cfmt = ["dep:xj_cfmt"]
+cfmt = ["dep:xj_cfmt", "xj_zstr/cfmt"]
 
 [dependencies]
 slotmap = "1"
@@ -25,6 +25,7 @@ parking_lot = "0.12"
 libc = "0.2"
 smallvec = "1"
 xj_cfmt = { path = "../../xj_cfmt", optional = true }
+xj_zstr = { path = "../../xj_zstr" }
 
 [dev-dependencies]
 libc = "0.2"
