@@ -21,6 +21,8 @@ mod state;
 
 mod cfmt;
 
+pub mod c_abi;
+
 pub use cfmt::{CioSink, emit_c};
 
 #[doc(hidden)]
