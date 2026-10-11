@@ -1,10 +1,13 @@
 //! `popen` / `pclose`.
 
-use std::ffi::CStr;
+use crate::ByteView;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::os::fd::{FromRawFd, IntoRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use xj_cfmt_core::c_bytes;
 
 use crate::buffer::BufferPolicy;
 use crate::errno;
@@ -13,8 +16,8 @@ use crate::slots;
 use crate::state::{FILE, OpenMode, State};
 use crate::{BUFSIZ, EOF, FILE_ptr};
 
-pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
-    let bytes = mode.to_bytes();
+pub fn popen<C: ByteView + ?Sized, M: ByteView + ?Sized>(command: &C, mode: &M) -> FILE_ptr {
+    let bytes = c_bytes(mode.view_bytes());
     let dir = match bytes.first().copied() {
         Some(b'r') => PipeDir::Read,
         Some(b'w') => PipeDir::Write,
@@ -24,13 +27,7 @@ pub fn popen(command: &CStr, mode: &CStr) -> FILE_ptr {
         }
     };
 
-    let cmd_str = match command.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            errno::set(libc::EINVAL);
-            return std::ptr::null();
-        }
-    };
+    let cmd_str = OsStr::from_bytes(c_bytes(command.view_bytes()));
 
     let mut c = Command::new("/bin/sh");
     c.arg("-c").arg(cmd_str);

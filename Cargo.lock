@@ -161,6 +161,7 @@ dependencies = [
  "slotmap",
  "smallvec",
  "xj_cfmt",
+ "xj_cfmt_core",
  "xj_zstr",
 ]
 
@@ -169,4 +170,5 @@ name = "xj_zstr"
 version = "0.1.0"
 dependencies = [
  "xj_cfmt",
+ "xj_cfmt_core",
 ]

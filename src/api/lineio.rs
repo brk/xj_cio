@@ -1,6 +1,7 @@
 //! Line-oriented I/O: `fgets`, `fputs`, `puts`, `getline`, `getdelim`.
 
-use std::ffi::CStr;
+use crate::ByteView;
+use xj_cfmt_core::c_bytes;
 
 use xj_zstr::{CStrDest, ZString};
 
@@ -104,8 +105,8 @@ pub unsafe fn fgets(buf: *mut u8, n: libc::c_int, t: FILE_ptr) -> *mut u8 {
 
 /// `fputs(s, fp)`. Writes the entire NUL-terminated string. Returns
 /// a non-negative integer on success, `EOF` on error.
-pub fn fputs(s: &CStr, t: FILE_ptr) -> core::ffi::c_int {
-    let bytes = s.to_bytes();
+pub fn fputs<B: ByteView + ?Sized>(s: &B, t: FILE_ptr) -> core::ffi::c_int {
+    let bytes = c_bytes(s.view_bytes());
     let r = ops::with_token(t, |st| {
         if !st.mode.writable() {
             errno::set(libc::EBADF);
@@ -121,8 +122,8 @@ pub fn fputs(s: &CStr, t: FILE_ptr) -> core::ffi::c_int {
 }
 
 /// `puts(s)`. Writes the string followed by `\n` to stdout.
-pub fn puts(s: &CStr) -> core::ffi::c_int {
-    let bytes = s.to_bytes();
+pub fn puts<B: ByteView + ?Sized>(s: &B) -> core::ffi::c_int {
+    let bytes = c_bytes(s.view_bytes());
     let stdout = crate::api::stdio_::stdout();
     let r = ops::with_token(stdout, |st| {
         if ops::write_from(st, bytes).is_err() {

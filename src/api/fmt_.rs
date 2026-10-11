@@ -2,7 +2,8 @@
 //! Printing macros and plan APIs use xj_cfmt's common renderer; scanning
 //! retains its separate grammar and `OutArg` destinations.
 
-use std::ffi::CStr;
+use crate::ByteView;
+use xj_cfmt_core::c_bytes;
 
 use crate::FILE_ptr;
 use crate::errno;
@@ -20,8 +21,12 @@ use super::ops;
 ///
 /// `args` must meet the requirements in [`OutArg`]'s "Pointer
 /// validity" section for the conversions in `fmt`.
-pub unsafe fn fscanf(t: FILE_ptr, fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
-    let bytes = fmt.to_bytes();
+pub unsafe fn fscanf<B: ByteView + ?Sized>(
+    t: FILE_ptr,
+    fmt: &B,
+    args: &mut [OutArg<'_>],
+) -> core::ffi::c_int {
+    let bytes = c_bytes(fmt.view_bytes());
     // SAFETY: forwarded from the caller.
     let r = ops::with_token(t, |s| unsafe { run_scanf(s, bytes, args) });
     r.unwrap_or(-1)
@@ -31,7 +36,11 @@ pub unsafe fn fscanf(t: FILE_ptr, fmt: &CStr, args: &mut [OutArg<'_>]) -> core::
 ///
 /// `args` must meet the requirements in [`OutArg`]'s "Pointer
 /// validity" section for the conversions in `fmt`.
-pub unsafe fn vfscanf(t: FILE_ptr, fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
+pub unsafe fn vfscanf<B: ByteView + ?Sized>(
+    t: FILE_ptr,
+    fmt: &B,
+    args: &mut [OutArg<'_>],
+) -> core::ffi::c_int {
     // SAFETY: forwarded from the caller.
     unsafe { fscanf(t, fmt, args) }
 }
@@ -40,7 +49,7 @@ pub unsafe fn vfscanf(t: FILE_ptr, fmt: &CStr, args: &mut [OutArg<'_>]) -> core:
 ///
 /// `args` must meet the requirements in [`OutArg`]'s "Pointer
 /// validity" section for the conversions in `fmt`.
-pub unsafe fn scanf(fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
+pub unsafe fn scanf<B: ByteView + ?Sized>(fmt: &B, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     // SAFETY: forwarded from the caller.
     unsafe { fscanf(crate::api::stdio_::stdin(), fmt, args) }
 }
@@ -49,7 +58,7 @@ pub unsafe fn scanf(fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
 ///
 /// `args` must meet the requirements in [`OutArg`]'s "Pointer
 /// validity" section for the conversions in `fmt`.
-pub unsafe fn vscanf(fmt: &CStr, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
+pub unsafe fn vscanf<B: ByteView + ?Sized>(fmt: &B, args: &mut [OutArg<'_>]) -> core::ffi::c_int {
     // SAFETY: forwarded from the caller.
     unsafe { scanf(fmt, args) }
 }

@@ -81,7 +81,7 @@ Functions live in a `xj_cio` crate and are named identically to their POSIX coun
 pub enum _File {}
 pub type FILE_ptr = *const _File;     // null means "no file" (replaces NULL)
 
-pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr;
+pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> FILE_ptr;
 pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
 pub fn fread_(dst: &mut [u8], f: FILE_ptr) -> usize;
 pub fn ferror(f: FILE_ptr) -> c_int;
@@ -194,7 +194,7 @@ Slotmap keys carry a generation counter alongside the slot index. Removing a slo
 `fopen` and friends do:
 
 ```rust
-pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr {
+pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> FILE_ptr {
     let f = match FILE::new(path, mode) {
         Ok(f) => f,
         Err(e) => { errno::set(e); return std::ptr::null(); }
@@ -491,16 +491,17 @@ There is no parallel ZStr-specific copy of the API. Most functions need nothing 
 
 | What C does with the string | Functions | `xj_cio` parameter | Passing a `ZStr` |
 |---|---|---|---|
-| Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, scanf formats | `&CStr` | `z.as_c_str()`, which stops at the first NUL, as C does |
-| Reads or writes bytes with an explicit length | `fread_`, `fwrite_` | `&mut [u8]`, `&[u8]` | The view matching C's length argument: `as_bytes()` for `strlen(s)`, `as_buffer()` for `sizeof buf`, `as_buffer_mut()` or a sub-slice for reads |
+| Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, scanf formats | `&B` where `B: ByteView + ?Sized` | Pass `z` directly; the consumer stops at the first NUL or view end |
+| Reads bytes | `fwrite_` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range |
+| Writes bytes into a bounded region | `fread_` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument |
 | Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s`, `%c` and `%[` | `xj_zstr::CStrDest` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
 | Grows a string | `getline_`, `getdelim_` | `&mut ZString` | The `ZString` itself |
 
-Read-only parameters stay `&CStr`, so string literals (`c"r"`) and `CString`s work with no `xj_zstr` types. Parameters are concrete types rather than generics, so translated calls need no annotations.
+Read-only parameters share `xj_cfmt_core::ByteView`, reexported by `xj_cio`. Ordinary strings (`"r"`), C strings (`c"r"`), byte slices, `ZStr`, and their owned forms can be passed directly. Unix `Path`, `PathBuf`, `OsStr`, and `OsString` also work for paths without requiring UTF-8. String consumers stop at the first NUL or view end; `fwrite_` writes the complete view. Optional generic inputs need a type when absent: use `None::<&str>` with `perror_` or `freopen_`.
 
 | C | Rust |
 |---|---|
-| `fopen(path, "r")`, `path` a `ZStr` | `fopen(path.as_c_str(), c"r")` |
+| `fopen(path, "r")`, `path` a `ZStr` | `fopen(path, "r")` |
 | `fgets(buf, sizeof buf, f)`, `char buf[N]` | `fgets_((&mut buf).into(), f)` |
 | `fgets(out, n, f)`, `out` a `ZStr` | `fgets_(out.limit(n), f)` |
 | `snprintf(out, n, fmt, …)`, guided storage and safe arguments | `snprintf_safe!(out, n, fmt, …)` |

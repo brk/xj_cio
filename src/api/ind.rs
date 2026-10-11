@@ -22,14 +22,15 @@ pub fn clearerr(t: FILE_ptr) {
     });
 }
 
-/// Safe sibling of `perror`. Writes "<prefix>: <strerror(errno)>\n"
-/// (or just "<strerror(errno)>\n" if `prefix` is `None`) to stderr.
-pub fn perror_(prefix: Option<&CStr>) {
+/// Safe sibling of `perror`. Writes `<prefix>: <strerror(errno)>\n`
+/// (or just `<strerror(errno)>\n` if `prefix` is `None`) to stderr.
+/// Use `None::<&str>` when omitting the prefix.
+pub fn perror_<B: crate::ByteView + ?Sized>(prefix: Option<&B>) {
     let saved = errno::get();
+    let prefix = prefix.map(|p| xj_cfmt_core::c_bytes(p.view_bytes()));
     let stderr = crate::api::stdio_::stderr();
     let _ = ops::with_token(stderr, |s| {
-        if let Some(cstr) = prefix {
-            let bytes = cstr.to_bytes();
+        if let Some(bytes) = prefix {
             if !bytes.is_empty() {
                 let _ = ops::write_from(s, bytes);
                 let _ = ops::write_from(s, b": ");
@@ -53,7 +54,7 @@ pub fn perror_(prefix: Option<&CStr>) {
     });
 }
 
-/// `perror(prefix)` writes "<prefix>: <strerror(errno)>\n" to stderr.
+/// `perror(prefix)` writes `<prefix>: <strerror(errno)>\n` to stderr.
 ///
 /// # Safety
 ///

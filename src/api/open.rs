@@ -6,6 +6,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::ByteView;
+use xj_cfmt_core::c_bytes;
 use xj_zstr::CStrDest;
 
 use crate::buffer::BufferPolicy;
@@ -17,9 +19,9 @@ use crate::{BUFSIZ, EOF, FILE_ptr};
 
 use super::ops;
 
-fn cstr_to_path(s: &CStr) -> Option<&Path> {
+fn view_to_path<B: ByteView + ?Sized>(s: &B) -> &Path {
     use std::os::unix::ffi::OsStrExt;
-    Some(Path::new(std::ffi::OsStr::from_bytes(s.to_bytes())))
+    Path::new(std::ffi::OsStr::from_bytes(c_bytes(s.view_bytes())))
 }
 
 fn open_file_for(mode: OpenMode, path: &Path) -> std::io::Result<File> {
@@ -55,21 +57,15 @@ fn default_policy_for(_h: &Handle) -> BufferPolicy {
     BufferPolicy::Full
 }
 
-pub fn fopen(path: &CStr, mode: &CStr) -> FILE_ptr {
-    let m = match OpenMode::parse(mode.to_bytes()) {
+pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> FILE_ptr {
+    let m = match OpenMode::parse(c_bytes(mode.view_bytes())) {
         Some(m) => m,
         None => {
             errno::set(libc::EINVAL);
             return std::ptr::null();
         }
     };
-    let p = match cstr_to_path(path) {
-        Some(p) => p,
-        None => {
-            errno::set(libc::EINVAL);
-            return std::ptr::null();
-        }
-    };
+    let p = view_to_path(path);
     let f = match open_file_for(m, p) {
         Ok(f) => f,
         Err(e) => {
@@ -127,8 +123,13 @@ pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
 /// Safe sibling of `freopen`. `path = None` corresponds to
 /// `freopen(NULL, mode, fp)` (mode-change on the existing handle,
 /// which we don't support — returns a null handle with
-/// `errno = EINVAL`).
-pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
+/// `errno = EINVAL`). When passing no path, write `None::<&str>` to
+/// specify the input type.
+pub fn freopen_<P: ByteView + ?Sized, M: ByteView + ?Sized>(
+    path: Option<&P>,
+    mode: &M,
+    t: FILE_ptr,
+) -> FILE_ptr {
     let arc = match slots::lookup(t) {
         Some(a) => a,
         None => {
@@ -136,13 +137,14 @@ pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
             return std::ptr::null();
         }
     };
-    let m = match OpenMode::parse(mode.to_bytes()) {
+    let m = match OpenMode::parse(c_bytes(mode.view_bytes())) {
         Some(m) => m,
         None => {
             errno::set(libc::EINVAL);
             return std::ptr::null();
         }
     };
+    let path = path.map(|p| c_bytes(p.view_bytes()));
     let res: Result<(), libc::c_int> = arc.with_state(|s| {
         // Flush + close current handle.
         let _ = ops::flush_internal(s);
@@ -160,10 +162,7 @@ pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
             None => return Err(libc::EINVAL),
             Some(c) => c,
         };
-        let p = match cstr_to_path(cstr) {
-            Some(p) => p,
-            None => return Err(libc::EINVAL),
-        };
+        let p = view_to_path(cstr);
         let f = match open_file_for(m, p) {
             Ok(f) => f,
             Err(e) => return Err(errno::from_io(&e)),
@@ -188,7 +187,7 @@ pub fn freopen_(path: Option<&CStr>, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
 /// `path` must be null or point to a NUL-terminated string that is
 /// valid for reads up to and including its NUL and is not modified
 /// during the call.
-pub unsafe fn freopen(path: *const u8, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
+pub unsafe fn freopen<M: ByteView + ?Sized>(path: *const u8, mode: &M, t: FILE_ptr) -> FILE_ptr {
     let p = if path.is_null() {
         None
     } else {
@@ -208,8 +207,8 @@ pub unsafe fn freopen(path: *const u8, mode: &CStr, t: FILE_ptr) -> FILE_ptr {
 /// descriptor that the caller may use, in the I/O-safety sense of a
 /// `BorrowedFd`, for the duration of the call, i.e. not one that
 /// another component owns and may close or reuse concurrently.
-pub unsafe fn fdopen(fd: libc::c_int, mode: &CStr) -> FILE_ptr {
-    let m = match OpenMode::parse(mode.to_bytes()) {
+pub unsafe fn fdopen<M: ByteView + ?Sized>(fd: libc::c_int, mode: &M) -> FILE_ptr {
+    let m = match OpenMode::parse(c_bytes(mode.view_bytes())) {
         Some(m) => m,
         None => {
             errno::set(libc::EINVAL);
@@ -344,14 +343,8 @@ pub unsafe fn tmpnam(buf: *mut u8) -> *mut u8 {
     }
 }
 
-pub fn remove(path: &CStr) -> core::ffi::c_int {
-    let p = match cstr_to_path(path) {
-        Some(p) => p,
-        None => {
-            errno::set(libc::EINVAL);
-            return -1;
-        }
-    };
+pub fn remove<P: ByteView + ?Sized>(path: &P) -> core::ffi::c_int {
+    let p = view_to_path(path);
     // Try unlink first; fall back to rmdir for directories. Match libc.
     match std::fs::remove_file(p) {
         Ok(()) => 0,
@@ -369,21 +362,9 @@ pub fn remove(path: &CStr) -> core::ffi::c_int {
     }
 }
 
-pub fn rename(from: &CStr, to: &CStr) -> core::ffi::c_int {
-    let f = match cstr_to_path(from) {
-        Some(p) => p,
-        None => {
-            errno::set(libc::EINVAL);
-            return -1;
-        }
-    };
-    let t = match cstr_to_path(to) {
-        Some(p) => p,
-        None => {
-            errno::set(libc::EINVAL);
-            return -1;
-        }
-    };
+pub fn rename<F: ByteView + ?Sized, T: ByteView + ?Sized>(from: &F, to: &T) -> core::ffi::c_int {
+    let f = view_to_path(from);
+    let t = view_to_path(to);
     match std::fs::rename(f, t) {
         Ok(()) => 0,
         Err(e) => {

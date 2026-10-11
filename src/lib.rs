@@ -57,6 +57,8 @@ pub mod capture;
 
 pub use api::*;
 pub use print::{_eprint, _eprintln, _print, _println};
+/// Shared borrowed byte inputs for strings, paths, modes, and memory writes.
+pub use xj_cfmt_core::ByteView;
 
 /// Opaque placeholder for translated `FILE *` handles.
 ///
@@ -107,7 +109,7 @@ macro_rules! printf {
 macro_rules! fprintf {
     ($stream:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {
         $crate::emit_c($stream, $crate::__cfmt::printf::render(
-            $crate::__cfmt::CBytes::c_bytes(&$fmt), &[$($crate::Adapt::c_arg(&$arg)),*]))
+            $crate::__cfmt::ByteView::view_bytes(&$fmt), &[$($crate::Adapt::c_arg(&$arg)),*]))
     };
 }
 /// Safe C printf, using borrowed string views and scalar arguments.
@@ -123,7 +125,7 @@ macro_rules! fprintf_safe {
     ($stream:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {{
         $crate::__cfmt::__private::validate_safe_format!($fmt);
         $crate::emit_c($stream, $crate::__cfmt::printf::render_safe(
-            $crate::__cfmt::CBytes::c_bytes(&$fmt), &[$($crate::SafeAdapt::safe_arg(&$arg)),*]))
+            $crate::__cfmt::ByteView::view_bytes(&$fmt), &[$($crate::SafeAdapt::safe_arg(&$arg)),*]))
     }};
 }
 

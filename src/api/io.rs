@@ -66,8 +66,10 @@ pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
 }
 
 /// Safe sibling of `fwrite`. Writes `src` to the stream and returns
-/// the number of bytes actually written.
-pub fn fwrite_(src: &[u8], t: FILE_ptr) -> usize {
+/// the number of bytes actually written. Includes stored NULs and hidden
+/// bytes; use [`crate::fputs`] to write only the effective C string.
+pub fn fwrite_<B: crate::ByteView + ?Sized>(src: &B, t: FILE_ptr) -> usize {
+    let src = src.view_bytes();
     if src.is_empty() {
         return 0;
     }

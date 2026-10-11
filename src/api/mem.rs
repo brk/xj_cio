@@ -1,7 +1,8 @@
 //! In-memory streams: `fmemopen`, `open_memstream`.
 
-use std::ffi::CStr;
+use crate::ByteView;
 use std::sync::Arc;
+use xj_cfmt_core::c_bytes;
 
 use crate::buffer::BufferPolicy;
 use crate::errno;
@@ -10,8 +11,7 @@ use crate::slots;
 use crate::state::{FILE, OpenMode, State};
 use crate::FILE_ptr;
 
-fn parse_mem_mode(s: &CStr) -> Option<(MemMode, OpenMode)> {
-    let bytes = s.to_bytes();
+fn parse_mem_mode(bytes: &[u8]) -> Option<(MemMode, OpenMode)> {
     let mut base = None;
     let mut plus = false;
     for &c in bytes {
@@ -35,7 +35,7 @@ fn parse_mem_mode(s: &CStr) -> Option<(MemMode, OpenMode)> {
     })
 }
 
-fn open_mem(storage: MemStorage, mode: &CStr) -> FILE_ptr {
+fn open_mem<M: ByteView + ?Sized>(storage: MemStorage, mode: &M) -> FILE_ptr {
     let capacity = match &storage {
         MemStorage::Owned(v) => v.len(),
         MemStorage::User { len, .. } => *len,
@@ -44,7 +44,7 @@ fn open_mem(storage: MemStorage, mode: &CStr) -> FILE_ptr {
         errno::set(libc::EINVAL);
         return std::ptr::null();
     }
-    let (mm, om) = match parse_mem_mode(mode) {
+    let (mm, om) = match parse_mem_mode(c_bytes(mode.view_bytes())) {
         Some(p) => p,
         None => {
             errno::set(libc::EINVAL);
@@ -86,7 +86,7 @@ fn open_mem(storage: MemStorage, mode: &CStr) -> FILE_ptr {
 /// Safe equivalent of `fmemopen` over an owned buffer. The stream
 /// takes ownership of `buf`; its capacity is `buf.len()`. Returns a
 /// null handle (with `errno`) on invalid mode or empty buffer.
-pub fn fmemopen_(buf: Vec<u8>, mode: &CStr) -> FILE_ptr {
+pub fn fmemopen_<M: ByteView + ?Sized>(buf: Vec<u8>, mode: &M) -> FILE_ptr {
     open_mem(MemStorage::Owned(buf), mode)
 }
 
@@ -115,7 +115,11 @@ pub fn fmemopen_(buf: Vec<u8>, mode: &CStr) -> FILE_ptr {
 /// programs do after `fflush`.
 ///
 /// [`StreamGuard`]: crate::StreamGuard
-pub unsafe fn fmemopen(buf: *mut libc::c_void, size: libc::size_t, mode: &CStr) -> FILE_ptr {
+pub unsafe fn fmemopen<M: ByteView + ?Sized>(
+    buf: *mut libc::c_void,
+    size: libc::size_t,
+    mode: &M,
+) -> FILE_ptr {
     if buf.is_null() {
         if size == 0 {
             errno::set(libc::EINVAL);

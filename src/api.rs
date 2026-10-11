@@ -3,7 +3,9 @@
 //! The functions in this module are the translation target for
 //! mechanically-rewritten C code. Naming and argument order match
 //! POSIX 2024. `FILE *` becomes `FILE_ptr`, character storage uses
-//! `u8`, and borrowed input strings use `&CStr`. Formatted printing
+//! `u8`, and borrowed input strings use `ByteView`.
+//! C string inputs stop at the first NUL or view end; raw memory writes use
+//! the complete view, including stored NULs and hidden bytes. Formatted printing
 //! uses macros or pre-parsed plans; scanning takes a slice of `OutArg`.
 //! The public `c_abi` module supplies raw argument adapters and C
 //! function pointers for fixed-signature APIs.
