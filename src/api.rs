@@ -6,7 +6,8 @@
 //! `u8`, and borrowed input strings use `ByteView`.
 //! C string inputs stop at the first NUL or view end; raw memory writes use
 //! the complete view, including stored NULs and hidden bytes. Formatted printing
-//! uses macros or pre-parsed plans; scanning takes a slice of `OutArg`.
+//! uses macros or pre-parsed plans; scanning takes safe `ScanTarget`
+//! destinations, or raw `OutArg`s in the unsafe `_raw` functions.
 //! The public `c_abi` module supplies raw argument adapters and C
 //! function pointers for fixed-signature APIs.
 

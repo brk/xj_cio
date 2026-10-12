@@ -150,7 +150,7 @@ fn scanf_string_fields_fit_a_zstr_exactly() {
     let mut number: libc::c_int = 0;
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
     let r = unsafe {
-        fscanf(
+        fscanf_raw(
             input.stream,
             c"%s %d %[xy]",
             &mut [
@@ -175,7 +175,7 @@ fn scanf_overflow_stores_the_prefix_and_leaves_the_rest_unread() {
     errno::set(0);
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
     let r = unsafe {
-        fscanf(
+        fscanf_raw(
             input.stream,
             c"%s %d",
             &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut number)],
@@ -193,7 +193,7 @@ fn scanf_width_bounds_the_field_before_the_destination_does() {
     let input = Input::new("scanf_width", b"abcdefg");
     let mut word = ZString::with_capacity(4);
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-    let r = unsafe { fscanf(input.stream, c"%3s", &mut [OutArg::Buf(word.limit(4))]) };
+    let r = unsafe { fscanf_raw(input.stream, c"%3s", &mut [OutArg::Buf(word.limit(4))]) };
     assert_eq!(r, 1);
     assert_eq!(word.as_bytes(), b"abc");
 }
@@ -204,7 +204,7 @@ fn scanf_chars_fill_the_region_without_a_terminator() {
     let mut exact = *b"xxx";
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
     let r = unsafe {
-        fscanf(
+        fscanf_raw(
             input.stream,
             c"%3c",
             &mut [OutArg::Buf((&mut exact).into())],
@@ -218,7 +218,7 @@ fn scanf_chars_fill_the_region_without_a_terminator() {
     errno::set(0);
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
     let r = unsafe {
-        fscanf(
+        fscanf_raw(
             input.stream,
             c"%3c",
             &mut [OutArg::Buf((&mut small).into())],

@@ -170,7 +170,23 @@ dependencies = [
  "smallvec",
  "xj_bytes",
  "xj_cfmt",
+ "xj_scanf",
  "xj_zstr",
+]
+
+[[package]]
+name = "xj_scanf"
+version = "0.3.0"
+dependencies = [
+ "xj_bytes",
+ "xj_scanf_core",
+]
+
+[[package]]
+name = "xj_scanf_core"
+version = "0.1.0"
+dependencies = [
+ "xj_bytes",
 ]
 
 [[package]]

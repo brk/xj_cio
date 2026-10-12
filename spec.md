@@ -43,7 +43,7 @@ A faithful, mostly-safe Rust re-implementation of C's `<stdio.h>`, designed as a
 ├──────────────────────────────────────────────────────────────────┤
 │   Subsystems                                                     │
 │     ├─ Buffer engine (read/write/line/none policies)             │
-│     ├─ Format engine (printf/scanf runtime parsers)              │
+│     ├─ Format engines (xj_cfmt printing, xj_scanf scanning)      │
 │     └─ Handle dispatch (File, Stdio, Pipe, Mem, Closed)          │
 ├──────────────────────────────────────────────────────────────────┤
 │   Foundations:  std::io, std::fs, std::process, std::os::fd      │
@@ -65,7 +65,7 @@ The architecture is strictly layered. Each public function is a thin adapter tha
 | Char I/O | `fgetc`, `getc`, `getchar`, `fputc`, `putc`, `putchar`, `ungetc` |
 | Line I/O | `fgets`, `fputs`, `puts`, `getline`, `getdelim` |
 | Formatted output | `fprintf!`, `printf!`, their safe forms, and pre-parsed plan APIs |
-| Formatted input | `fscanf`, `scanf`, `vfscanf`, `vscanf` |
+| Formatted input | `fscanf`, `scanf` (safe `ScanTarget` destinations); `fscanf_raw`, `scanf_raw`, `sscanf_raw` (raw `OutArg` destinations); `vfscanf`, `vscanf`, `vsscanf` (`va_list`, behind the `c_variadic` feature) |
 | Positioning | `fseek`, `fseeko`, `ftell`, `ftello`, `fgetpos`, `fsetpos`, `rewind` |
 | Buffering | `setbuf`, `setvbuf`, `fflush` |
 | Indicators | `clearerr`, `feof`, `ferror`, `perror` |
@@ -436,7 +436,7 @@ Every `unsafe fn` has a `# Safety` section stating its preconditions, and every 
 4. **`getline` / `getdelim`.** `lineptr` and `n` must be valid for reads and writes. `*lineptr` must be null or a live `malloc`-family allocation of at least `*n` bytes. As POSIX specifies, `*n` is ignored when `*lineptr` is null.
 5. **Static result buffers.** `tmpnam(NULL)` and `ctermid(NULL)` write a shared static buffer, as in C. Concurrent calls, or overlapping use of a previously returned pointer, are a data race. That is the caller's contract.
 6. **`fmemopen` over a caller's buffer.** The buffer must stay valid for reads and writes of `size` initialized bytes for as long as the stream may touch it. That means until `fclose`, `pclose` or `freopen` returns, or until program exit and the `atexit` flush if the stream is never closed. One case extends this further. If the closing thread holds a `StreamGuard` on the stream, `fclose` defers its flush. The buffer must then stay valid until that guard drops and any operations other threads had already started have returned. Between operations the caller may access the buffer, as C programs do after `fflush`, but not during one. This contract is exactly the invariant on `MemStorage::User` that lets the safe `MemBacking::slice`/`slice_mut` build slices over the buffer. The owned-buffer path (`fmemopen_`, or `fmemopen` with a null buffer) needs no contract.
-7. **Format arguments.** Printing macros adapt arguments by Rust type into `Arg::I`, `U`, `F`, `Bytes`, or unclassified `Raw` carriers. The common renderer interprets each carrier according to its conversion. Raw `%s` reads and `%n` stores require an unsafe caller; the `_safe` macros reject raw pointers and count stores. Pre-parsed printing APIs take `&[Arg]`, including the translator's thin `va_list` adapter. Scanning retains `&mut [OutArg]` and its separate pointer-validity contracts. Moving or sharing raw carriers does not access their pointees; consuming them requires the corresponding unsafe API.
+7. **Format arguments.** Printing macros adapt arguments by Rust type into `Arg::I`, `U`, `F`, `Bytes`, or unclassified `Raw` carriers. The common renderer interprets each carrier according to its conversion. Raw `%s` reads and `%n` stores require an unsafe caller; the `_safe` macros reject raw pointers and count stores. Pre-parsed printing APIs take `&[Arg]`, including the translator's thin `va_list` adapter. Safe scanning takes `&mut [&mut dyn ScanTarget]`, shared with `xj_scanf`. The unsafe `fscanf_raw`, `scanf_raw` and `sscanf_raw` take `&mut [OutArg]` under its pointer-validity contract, made at each call; the unsafe `va_list` entry points pull one pointer of exactly the type each directive requires. Moving or sharing raw carriers does not access their pointees; consuming them requires the corresponding unsafe API.
 
 **Internal.** These are not visible to callers.
 
@@ -451,7 +451,7 @@ Every `unsafe fn` has a `# Safety` section stating its preconditions, and every 
     - `getpid`;
     - the `popen` pipe fd hand-off into `File`;
     - `strerror_r` into a local buffer for `perror_`, never `strerror`, whose static buffer another thread may overwrite.
-11. **scanf numeric fields.** These use `str::from_utf8_unchecked` over buffers that the scanner fills only with ASCII bytes.
+11. **scanf destinations.** The `OutArg` and `va_list` adapters are private and created only inside the unsafe entry points; they write through raw pointers under those calls' contracts. Each destination is checked against its directive's class and width before the directive reads input.
 
 Notably absent from this list: anything to do with `FILE_ptr` itself. Handle encode/decode and slotmap lookup are entirely safe Rust (`ptr::without_provenance` and `.addr()`), and the translated code never has access to a real pointer into our state.
 
@@ -510,7 +510,7 @@ Read-only parameters share `xj_bytes::ByteView`, reexported by `xj_cio`. Ordinar
 | `fgets(out, n, f)`, `out` a `ZStr` | `fgets_(out.limit(n), f)` |
 | `snprintf(out, n, fmt, …)`, guided storage and safe arguments | `snprintf_safe!(out, n, fmt, …)` |
 | `getline(&line, &cap, f)` | `getline_(&mut line, f)`, `line: ZString`; read `cap` as `line.capacity() + 1` |
-| `fscanf(f, "%15s %d", word, &n)`, `char word[16]` | `fscanf(f, c"%15s %d", &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut n)])` |
+| `fscanf(f, "%15s %d", word, &n)`, `char word[16]` | `fscanf(f, c"%15s %d", &mut [&mut word, &mut n])`, or `fscanf_raw(f, c"%15s %d", &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut n)])` |
 
 ### 8.2 `CStrDest`
 
@@ -533,15 +533,17 @@ Semantics:
 - **`tmpnam_(dst)` and `ctermid_(dst)` -> `Option<usize>`** write the whole name and return its length. If it does not fit, they fail with `ERANGE` and leave `dst` untouched, because a truncated path names a different file. `c_size() >= L_tmpnam` (respectively `L_ctermid`) always suffices; generated temporary names are at most `L_tmpnam - 1` bytes.
 - **The raw printing macros** (`snprintf!`, `sprintf!`) accept writable pointer destinations and require an unsafe caller. They copy only the output bytes and terminator, without constructing an oversized slice. The raw functions `fgets`, `tmpnam`, and `ctermid` retain their pointer contracts (§7.1): `fgets` shares its read loop with `fgets_`, while `tmpnam` and `ctermid` use a local array and copy out the name and NUL.
 
-### 8.3 scanf: `OutArg::Buf`
+### 8.3 scanf: bounded string destinations
 
-`OutArg<'a>` has a checked string variant, `Buf(CStrDest<'a>)`, alongside the unchecked raw `Str(*mut u8)`. Because `Buf` borrows mutably, `OutArg` is not `Copy`, and the scanf family takes `&mut [OutArg<'_>]`.
+Scanning runs on the shared `xj_scanf` engine. Safe destinations are `xj_scanf::ScanTarget`s, reexported here: integers, `f32`/`f64`, bounded byte storage (`[u8; N]`, `&mut [u8]`, `CStrDest`), and growable `Vec<u8>` and `String`. The raw `OutArg<'a>` has a checked string variant, `Buf(CStrDest<'a>)`, alongside the unchecked raw `Str(*mut u8)`. Because `Buf` borrows mutably, `OutArg` is not `Copy`, and the raw entry points take `&mut [OutArg<'_>]`.
 
-Where C would overflow the buffer, a `Buf` conversion fails instead:
+Where C would overflow the buffer, a bounded conversion fails instead:
 
-- **`%s` and `%[`** read at most `max_len() + 1` field bytes, or fewer if the format gives a width. If the field does not fit, the destination receives the first `max_len()` bytes, terminated. The extra byte is pushed back, so the rest of the field stays unread.
+- **`%s` and `%[`** read at most `max_len()` field bytes, or fewer if the format gives a width, and then only peek at the next byte. If the field does not fit, the destination receives the first `max_len()` bytes, terminated, and the rest of the field stays unread.
 - **`%Nc`** stores N bytes and no terminator, as in C. It may therefore fill the whole region, but not a `ZStr`'s reserved NUL. If `region_len() < N`, it fails before reading anything.
 - **On failure**, the call stops, returns the assignments made before the failed conversion, and sets `errno` to `EOVERFLOW`.
+
+A destination whose class or width does not fit its directive stops the call before the directive reads input, with `EINVAL`, as does an invalid or unsupported format (checked before any input is read). Scanning observes a set EOF indicator without reading further, as C11 `fgetc` requires; whitespace and literal mismatches no longer clear it.
 
 ### 8.4 `getline_` and `getdelim_`
 

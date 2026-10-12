@@ -1,39 +1,61 @@
-//! Scanning grammar and execution (separate from C printing).
+//! The `scanf` family over the shared `xj_scanf` engine.
 //!
-//! The translator marshals scanning destinations into `OutArg` slices.
+//! This module supplies the stream input adapter, the raw `OutArg` and
+//! `va_list` destination adapters, and the mapping from scan outcomes to C
+//! return values and `errno`. The engine owns the format grammar,
+//! conversions and safe destinations.
+
+use core::ffi::c_int;
+use std::io;
+
+use xj_scanf::xj_scanf_core::{Conv, DataModel, Directive, IntKind, Requirement, Slot};
+use xj_scanf::{ScanArgs, ScanInput, ScanOutcome, ScanTarget, Stop, StoreError, Value};
 
 use crate::api::ops;
 use crate::errno;
 use crate::state::State;
 
-/// One output destination for `scanf` family.
+/// One raw output destination for the unsafe `scanf` entry points.
 ///
 /// # Pointer validity
 ///
-/// The `scanf` family writes through the raw-pointer variants. Its
-/// (unsafe) callers must ensure, for each argument that a
-/// non-suppressed conversion stores into:
+/// The `_raw` functions write through the raw-pointer variants. Their
+/// callers must ensure, for each argument that a non-suppressed conversion
+/// stores into:
 ///
-/// - `Int`, `Short`, `Long`, `LongLong`, `UInt`, `ULong`, `ULongLong`,
-///   `Float`, `Double`: the pointer is null (the store is skipped) or
-///   valid for an aligned write of its pointee type.
-/// - `Str(p)`: `p` is non-null and valid for writes of the bytes
-///   stored. For `%s` and `%[`, that is the matched field plus a NUL
-///   (at most width + 1 bytes when the conversion has a width). For
-///   `%c`, it is exactly the width (default 1).
+/// - The integer variants, `Float` and `Double`: the pointer is null (the
+///   store is skipped) or valid for an aligned write of its pointee type.
+/// - `Str(p)`: `p` is null or valid for writes of the bytes stored. For
+///   `%s` and `%[`, that is the matched field plus a NUL (at most
+///   width + 1 bytes when the conversion has a width). For `%c`, it is
+///   exactly the width (default 1). For an `hh` integer or `%hhn`
+///   directive, it is one byte.
 ///
-/// In every case the destination must not be accessed through any
-/// other pointer or reference, including the format string, during
-/// the call.
+/// In every case the destination must not be accessed through any other
+/// pointer or reference, including the format string, during the call.
+///
+/// # Compatibility
+///
+/// Each directive accepts a destination of its class and width, of either
+/// signedness (see [`Requirement::accepts`]); otherwise the call stops with
+/// `EINVAL` before the directive reads input. `Str` additionally accepts
+/// `hh` integer and count directives, for translated `char *` arguments
+/// whose format is not known until run time.
 pub enum OutArg<'a> {
-    Suppress,
-    Int(*mut libc::c_int),
+    SChar(*mut libc::c_schar),
+    UChar(*mut libc::c_uchar),
     Short(*mut libc::c_short),
-    Long(*mut libc::c_long),
-    LongLong(*mut libc::c_longlong),
+    UShort(*mut libc::c_ushort),
+    Int(*mut libc::c_int),
     UInt(*mut libc::c_uint),
+    Long(*mut libc::c_long),
     ULong(*mut libc::c_ulong),
+    LongLong(*mut libc::c_longlong),
     ULongLong(*mut libc::c_ulonglong),
+    /// `size_t` and `uintptr_t`.
+    Size(*mut usize),
+    /// `ssize_t`, `ptrdiff_t` and `intptr_t`.
+    ISize(*mut isize),
     Float(*mut f32),
     Double(*mut f64),
     /// `%s`, `%c`, `%[...]`: write bytes into a char buffer.
@@ -52,566 +74,335 @@ pub enum OutArg<'a> {
     Buf(crate::CStrDest<'a>),
 }
 
-// SAFETY: the raw pointers are written only by the
-// unsafe `scanf` functions, under their callers' guarantees. `Buf` holds
-// a `CStrDest` (a `&mut [u8]` and a flag), which is `Send + Sync` anyway.
+// SAFETY: the raw pointers are written only by the unsafe `scanf` entry
+// points, under their callers' guarantees. `Buf` holds a `CStrDest` (a
+// `&mut [u8]` and a flag), which is `Send + Sync` anyway.
 unsafe impl Send for OutArg<'_> {}
 // SAFETY: as for `Send`.
 unsafe impl Sync for OutArg<'_> {}
 
 // --------------------------------------------------------------------------
-// scanf engine
-// --------------------------------------------------------------------------
+// Input
 
-/// Runs a `scanf` format against `state`, storing into `args`.
+/// A locked stream's state as engine input. All lookahead stays in the
+/// stream's own pushback and buffer, so nothing is restored on exit.
+struct StreamInput<'s> {
+    state: &'s mut State,
+}
+
+impl ScanInput for StreamInput<'_> {
+    fn peek(&mut self) -> io::Result<Option<u8>> {
+        let s = &mut *self.state;
+        if let Some(&byte) = s.pushback.last() {
+            return Ok(Some(byte));
+        }
+        if s.buffer.cursor >= s.buffer.fill {
+            // Sticky EOF: once the indicator is set, scanning reads no
+            // further data until `clearerr` or a reposition clears it.
+            if s.eof {
+                return Ok(None);
+            }
+            ops::refill_buffer(s)?;
+        }
+        Ok((s.buffer.cursor < s.buffer.fill).then(|| s.buffer.data[s.buffer.cursor]))
+    }
+
+    fn bump(&mut self) {
+        if self.state.pushback.pop().is_none() {
+            self.state.buffer.cursor += 1;
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Raw destinations
+
+fn slot(arg: &OutArg<'_>) -> Slot {
+    match arg {
+        OutArg::SChar(_) | OutArg::UChar(_) => Slot::Int(IntKind::Char),
+        OutArg::Short(_) | OutArg::UShort(_) => Slot::Int(IntKind::Short),
+        OutArg::Int(_) | OutArg::UInt(_) => Slot::Int(IntKind::Int),
+        OutArg::Long(_) | OutArg::ULong(_) => Slot::Int(IntKind::Long),
+        OutArg::LongLong(_) | OutArg::ULongLong(_) => Slot::Int(IntKind::LongLong),
+        OutArg::Size(_) => Slot::Int(IntKind::Size),
+        OutArg::ISize(_) => Slot::Int(IntKind::PtrDiff),
+        OutArg::Float(_) => Slot::Float,
+        OutArg::Double(_) => Slot::Double,
+        OutArg::Str(_) | OutArg::Buf(_) => Slot::Bytes,
+    }
+}
+
+/// Validates `arg` for `d` and returns its byte limit.
+fn raw_prepare(arg: &mut OutArg<'_>, d: &Directive) -> Result<Option<usize>, StoreError> {
+    let req = d.requirement().ok_or(StoreError::TypeMismatch)?;
+    match arg {
+        OutArg::Buf(dest) => dest.prepare(d),
+        // The legacy `char *` fallback: one byte for `hh` integers and
+        // `%hhn`, under the same conversion policy as a 1-byte integer.
+        OutArg::Str(_)
+            if matches!(
+                req,
+                Requirement::Int {
+                    kind: IntKind::Char,
+                    ..
+                } | Requirement::Count(IntKind::Char)
+            ) =>
+        {
+            Ok(None)
+        }
+        _ if req.accepts(slot(arg), &DataModel::HOST) => Ok(matches!(
+            (&*arg, req),
+            (OutArg::SChar(_) | OutArg::UChar(_), Requirement::Chars(_))
+        )
+        .then_some(1)),
+        _ => Err(StoreError::TypeMismatch),
+    }
+}
+
+/// Stores one conversion through a prepared raw destination.
 ///
 /// # Safety
 ///
-/// `args` must meet the requirements in [`OutArg`]'s "Pointer
-/// validity" section for the conversions in `fmt`.
-pub unsafe fn run_scanf(
+/// `arg` must meet [`OutArg`]'s pointer validity requirements for `d`.
+unsafe fn raw_store(arg: &mut OutArg<'_>, d: &Directive, v: Value<'_>) -> Result<(), StoreError> {
+    macro_rules! int {
+        ($p:expr, $signed:expr, $ty:ty) => {{
+            let bits =
+                xj_scanf::int_bits(d, v, $signed, <$ty>::BITS).ok_or(StoreError::TypeMismatch)?;
+            if !$p.is_null() {
+                // SAFETY: a non-null pointer the caller vouches for.
+                unsafe { $p.write(bits as $ty) };
+            }
+        }};
+    }
+    match arg {
+        OutArg::SChar(p) => int!(*p, true, libc::c_schar),
+        OutArg::UChar(p) => int!(*p, false, libc::c_uchar),
+        OutArg::Short(p) => int!(*p, true, libc::c_short),
+        OutArg::UShort(p) => int!(*p, false, libc::c_ushort),
+        OutArg::Int(p) => int!(*p, true, libc::c_int),
+        OutArg::UInt(p) => int!(*p, false, libc::c_uint),
+        OutArg::Long(p) => int!(*p, true, libc::c_long),
+        OutArg::ULong(p) => int!(*p, false, libc::c_ulong),
+        OutArg::LongLong(p) => int!(*p, true, libc::c_longlong),
+        OutArg::ULongLong(p) => int!(*p, false, libc::c_ulonglong),
+        OutArg::Size(p) => int!(*p, false, usize),
+        OutArg::ISize(p) => int!(*p, true, isize),
+        OutArg::Float(p) => {
+            let Value::Float32(x) = v else {
+                return Err(StoreError::TypeMismatch);
+            };
+            if !p.is_null() {
+                // SAFETY: a non-null pointer the caller vouches for.
+                unsafe { p.write(x) };
+            }
+        }
+        OutArg::Double(p) => {
+            let Value::Float64(x) = v else {
+                return Err(StoreError::TypeMismatch);
+            };
+            if !p.is_null() {
+                // SAFETY: a non-null pointer the caller vouches for.
+                unsafe { p.write(x) };
+            }
+        }
+        OutArg::Str(p) => match v {
+            Value::Bytes(bytes) if !p.is_null() => {
+                let terminate = d.conv != Conv::Chars;
+                // SAFETY: the caller guarantees room for the field, plus a
+                // NUL for `%s` and `%[`, not otherwise accessed.
+                unsafe {
+                    p.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+                    if terminate {
+                        p.add(bytes.len()).write(0);
+                    }
+                }
+            }
+            Value::Bytes(_) => {}
+            _ => {
+                let signed = !matches!(d.conv, Conv::Int { signed: false, .. });
+                int!(*p, signed, u8)
+            }
+        },
+        OutArg::Buf(dest) => dest.store(d, v)?,
+    }
+    Ok(())
+}
+
+/// The engine adapter over a raw argument slice. Created only inside the
+/// unsafe entry points; it never escapes the call.
+pub(crate) struct RawArgs<'a, 'b> {
+    args: &'a mut [OutArg<'b>],
+    next: usize,
+}
+
+impl<'a, 'b> RawArgs<'a, 'b> {
+    /// # Safety
+    ///
+    /// `args` must meet [`OutArg`]'s pointer validity requirements for the
+    /// format this adapter is used with.
+    pub(crate) unsafe fn new(args: &'a mut [OutArg<'b>]) -> Self {
+        RawArgs { args, next: 0 }
+    }
+}
+
+impl ScanArgs for RawArgs<'_, '_> {
+    fn prepare(&mut self, d: &Directive) -> Result<Option<usize>, StoreError> {
+        let arg = self.args.get_mut(self.next).ok_or(StoreError::Missing)?;
+        let limit = raw_prepare(arg, d)?;
+        self.next += 1;
+        Ok(limit)
+    }
+
+    fn store(&mut self, d: &Directive, v: Value<'_>) -> Result<(), StoreError> {
+        let index = self.next.checked_sub(1).ok_or(StoreError::Missing)?;
+        // SAFETY: `new`'s caller vouched for these arguments.
+        unsafe { raw_store(&mut self.args[index], d, v) }
+    }
+}
+
+/// The engine adapter over a `va_list`: each claim pulls one pointer of
+/// exactly the type the directive requires.
+#[cfg(feature = "c_variadic")]
+pub(crate) struct VaArgs<F: FnMut(Requirement) -> OutArg<'static>> {
+    pull: F,
+    current: Option<OutArg<'static>>,
+}
+
+#[cfg(feature = "c_variadic")]
+impl<F: FnMut(Requirement) -> OutArg<'static>> VaArgs<F> {
+    /// # Safety
+    ///
+    /// Each pointer `pull` returns must meet [`OutArg`]'s pointer validity
+    /// requirements for its directive.
+    pub(crate) unsafe fn new(pull: F) -> Self {
+        VaArgs {
+            pull,
+            current: None,
+        }
+    }
+}
+
+#[cfg(feature = "c_variadic")]
+impl<F: FnMut(Requirement) -> OutArg<'static>> ScanArgs for VaArgs<F> {
+    fn prepare(&mut self, d: &Directive) -> Result<Option<usize>, StoreError> {
+        let req = d.requirement().ok_or(StoreError::TypeMismatch)?;
+        let mut arg = (self.pull)(req);
+        let limit = raw_prepare(&mut arg, d)?;
+        self.current = Some(arg);
+        Ok(limit)
+    }
+
+    fn store(&mut self, d: &Directive, v: Value<'_>) -> Result<(), StoreError> {
+        let arg = self.current.as_mut().ok_or(StoreError::Missing)?;
+        // SAFETY: the unsafe `va_list` entry point's caller vouched for
+        // each pointer in the list.
+        unsafe { raw_store(arg, d, v) }
+    }
+}
+
+/// Pulls the next pointer for `req`.
+///
+/// # Safety
+///
+/// The next argument in `ap` must be a pointer of the type `req` names.
+#[cfg(feature = "c_variadic")]
+pub(crate) unsafe fn va_arg(ap: &mut core::ffi::VaList, req: Requirement) -> OutArg<'static> {
+    use libc::{
+        c_int, c_long, c_longlong, c_schar, c_short, c_uchar, c_uint, c_ulong, c_ulonglong,
+        c_ushort,
+    };
+    let (kind, signed) = match req {
+        Requirement::Int { kind, signed } => (kind, signed),
+        Requirement::Count(kind) => (kind, true),
+        // SAFETY: forwarded from the caller.
+        Requirement::Float => return OutArg::Float(unsafe { ap.arg::<*mut f32>() }),
+        // SAFETY: forwarded from the caller.
+        Requirement::Double => return OutArg::Double(unsafe { ap.arg::<*mut f64>() }),
+        // SAFETY: forwarded from the caller.
+        Requirement::Str | Requirement::Chars(_) => {
+            return OutArg::Str(unsafe { ap.arg::<*mut u8>() });
+        }
+    };
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        match (kind, signed) {
+            (IntKind::Char, true) => OutArg::SChar(ap.arg::<*mut c_schar>()),
+            (IntKind::Char, false) => OutArg::UChar(ap.arg::<*mut c_uchar>()),
+            (IntKind::Short, true) => OutArg::Short(ap.arg::<*mut c_short>()),
+            (IntKind::Short, false) => OutArg::UShort(ap.arg::<*mut c_ushort>()),
+            (IntKind::Int, true) => OutArg::Int(ap.arg::<*mut c_int>()),
+            (IntKind::Int, false) => OutArg::UInt(ap.arg::<*mut c_uint>()),
+            (IntKind::Long, true) => OutArg::Long(ap.arg::<*mut c_long>()),
+            (IntKind::Long, false) => OutArg::ULong(ap.arg::<*mut c_ulong>()),
+            // `intmax_t` is `long long` width on every supported target.
+            (IntKind::LongLong | IntKind::IntMax, true) => {
+                OutArg::LongLong(ap.arg::<*mut c_longlong>())
+            }
+            (IntKind::LongLong | IntKind::IntMax, false) => {
+                OutArg::ULongLong(ap.arg::<*mut c_ulonglong>())
+            }
+            (IntKind::Size, _) => OutArg::Size(ap.arg::<*mut usize>()),
+            (IntKind::PtrDiff, _) => OutArg::ISize(ap.arg::<*mut isize>()),
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Entry-point plumbing
+
+/// C's return value, with `errno` for library-defined failures. The input
+/// adapter has already maintained the stream's EOF and error indicators.
+pub(crate) fn finish(outcome: &ScanOutcome) -> c_int {
+    match &outcome.stop {
+        Stop::InvalidFormat { .. }
+        | Stop::Store {
+            err: StoreError::TypeMismatch | StoreError::Missing,
+            ..
+        } => errno::set(libc::EINVAL),
+        Stop::Store {
+            err: StoreError::Capacity,
+            ..
+        } => errno::set(libc::EOVERFLOW),
+        Stop::Io(e) => {
+            if let Some(code) = e.raw_os_error() {
+                errno::set(code);
+            }
+        }
+        Stop::FormatEnd | Stop::MatchingFailure | Stop::InputEnd => {}
+    }
+    outcome.c_return()
+}
+
+/// Scans a locked stream.
+pub(crate) fn scan_state<A: ScanArgs + ?Sized>(
     state: &mut State,
     fmt: &[u8],
-    args: &mut [OutArg<'_>],
-) -> core::ffi::c_int {
+    args: &mut A,
+) -> c_int {
     if !state.mode.readable() {
         errno::set(libc::EBADF);
         state.err = true;
         return -1;
     }
-
-    let mut consumed_any = false;
-    let mut matched: i32 = 0;
-    let mut a = 0usize;
-    let mut i = 0usize;
-
-    while i < fmt.len() {
-        let b = fmt[i];
-
-        if b.is_ascii_whitespace() {
-            // Match any amount of whitespace (incl. zero).
-            i += 1;
-            loop {
-                let b = match ops::read_one(state) {
-                    Ok(Some(b)) => b,
-                    Ok(None) => break,
-                    Err(_) => return -1,
-                };
-                if !b.is_ascii_whitespace() {
-                    state.pushback.push(b);
-                    state.eof = false;
-                    break;
-                }
-            }
-            continue;
-        }
-
-        if b != b'%' {
-            // Literal match: read one byte and require equality.
-            let r = match ops::read_one(state) {
-                Ok(Some(b)) => b,
-                Ok(None) => {
-                    return if consumed_any { matched } else { -1 };
-                }
-                Err(_) => return -1,
-            };
-            if r != b {
-                state.pushback.push(r);
-                state.eof = false;
-                return matched;
-            }
-            consumed_any = true;
-            i += 1;
-            continue;
-        }
-
-        // Start of a directive.
-        i += 1;
-        let mut suppress = false;
-        if fmt.get(i).copied() == Some(b'*') {
-            suppress = true;
-            i += 1;
-        }
-        // Width
-        let mut width: Option<usize> = None;
-        let mut w = 0usize;
-        let mut have_width = false;
-        while let Some(c) = fmt.get(i).copied() {
-            if c.is_ascii_digit() {
-                w = w * 10 + (c - b'0') as usize;
-                i += 1;
-                have_width = true;
-            } else {
-                break;
-            }
-        }
-        if have_width {
-            width = Some(w);
-        }
-        // Length modifier — ignored.
-        loop {
-            match fmt.get(i).copied() {
-                Some(b'h') | Some(b'l') | Some(b'L') | Some(b'z') | Some(b'j') | Some(b't') => {
-                    i += 1
-                }
-                _ => break,
-            }
-        }
-        let conv = match fmt.get(i).copied() {
-            Some(c) => c,
-            None => return matched,
-        };
-        i += 1;
-
-        match conv {
-            b'%' => {
-                let r = match ops::read_one(state) {
-                    Ok(Some(b)) => b,
-                    Ok(None) => return if consumed_any { matched } else { -1 },
-                    Err(_) => return -1,
-                };
-                if r != b'%' {
-                    state.pushback.push(r);
-                    state.eof = false;
-                    return matched;
-                }
-                consumed_any = true;
-            }
-            b'd' | b'i' | b'u' | b'x' | b'X' | b'o' => {
-                skip_ws(state);
-                let mut buf = Vec::with_capacity(24);
-                let mut count = 0usize;
-                let mut sign_seen = false;
-                let cap = width.unwrap_or(usize::MAX);
-                // Optional sign
-                if let Ok(Some(b)) = ops::read_one(state) {
-                    if (b == b'-' || b == b'+') && count < cap {
-                        buf.push(b);
-                        count += 1;
-                        sign_seen = true;
-                    } else {
-                        state.pushback.push(b);
-                        state.eof = false;
-                    }
-                }
-                let _ = sign_seen;
-                while count < cap {
-                    let b = match ops::read_one(state) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => break,
-                        Err(_) => return -1,
-                    };
-                    let ok = match conv {
-                        b'd' | b'u' => b.is_ascii_digit(),
-                        b'i' => {
-                            b.is_ascii_digit()
-                                || b == b'x'
-                                || b == b'X'
-                                || (b'a'..=b'f').contains(&b)
-                                || (b'A'..=b'F').contains(&b)
-                        }
-                        b'x' | b'X' => {
-                            b.is_ascii_digit()
-                                || (b'a'..=b'f').contains(&b)
-                                || (b'A'..=b'F').contains(&b)
-                        }
-                        b'o' => (b'0'..=b'7').contains(&b),
-                        _ => false,
-                    };
-                    if ok {
-                        buf.push(b);
-                        count += 1;
-                    } else {
-                        state.pushback.push(b);
-                        state.eof = false;
-                        break;
-                    }
-                }
-                if buf.is_empty() || (buf.len() == 1 && (buf[0] == b'-' || buf[0] == b'+')) {
-                    return if buf.is_empty() && state.eof && !consumed_any && matched == 0 {
-                        -1
-                    } else {
-                        matched
-                    };
-                }
-                // SAFETY: `buf` holds only bytes accepted above (sign,
-                // digits, `a-f`/`A-F`, `x`/`X`), all ASCII, so it is
-                // valid UTF-8.
-                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
-                let parsed: i64 = match conv {
-                    b'd' | b'i' => parse_int_with_radix(s, 0).unwrap_or(0),
-                    b'u' => parse_uint_with_radix(s, 10).unwrap_or(0) as i64,
-                    b'x' | b'X' => parse_uint_with_radix(s, 16).unwrap_or(0) as i64,
-                    b'o' => parse_uint_with_radix(s, 8).unwrap_or(0) as i64,
-                    _ => 0,
-                };
-                if !suppress {
-                    if let Some(arg) = args.get(a) {
-                        // SAFETY: `arg` is the destination of this
-                        // non-suppressed conversion; the caller vouches
-                        // for it.
-                        unsafe { write_int_to_outarg(arg, parsed) };
-                    }
-                    a += 1;
-                    matched += 1;
-                }
-                consumed_any = true;
-            }
-            b's' => {
-                skip_ws(state);
-                let cap = field_limit(args, a, suppress, width.unwrap_or(usize::MAX));
-                let mut buf = Vec::new();
-                while buf.len() < cap {
-                    let b = match ops::read_one(state) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => break,
-                        Err(_) => return -1,
-                    };
-                    if b.is_ascii_whitespace() {
-                        state.pushback.push(b);
-                        state.eof = false;
-                        break;
-                    }
-                    buf.push(b);
-                }
-                if buf.is_empty() {
-                    return if consumed_any || matched > 0 {
-                        matched
-                    } else {
-                        -1
-                    };
-                }
-                if !suppress {
-                    // SAFETY: the destination of this non-suppressed
-                    // `%s`; the caller vouches for room for the field
-                    // and its NUL.
-                    if unsafe { store_string(state, args.get_mut(a), &mut buf) }.is_err() {
-                        return matched;
-                    }
-                    a += 1;
-                    matched += 1;
-                }
-                consumed_any = true;
-            }
-            b'c' => {
-                let cap = width.unwrap_or(1);
-                if !suppress {
-                    if let Some(OutArg::Buf(dst)) = args.get(a) {
-                        if dst.region_len() < cap {
-                            errno::set(libc::EOVERFLOW);
-                            return matched;
-                        }
-                    }
-                }
-                let mut buf = Vec::with_capacity(cap);
-                while buf.len() < cap {
-                    let b = match ops::read_one(state) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => break,
-                        Err(_) => return -1,
-                    };
-                    buf.push(b);
-                }
-                if buf.len() < cap {
-                    return if consumed_any || matched > 0 {
-                        matched
-                    } else {
-                        -1
-                    };
-                }
-                if !suppress {
-                    match args.get_mut(a) {
-                        // SAFETY: the destination of this non-suppressed
-                        // `%c`; the caller guarantees `p` is valid for
-                        // `cap == buf.len()` unaliased bytes of writes.
-                        Some(OutArg::Str(p)) => unsafe {
-                            for (j, &b) in buf.iter().enumerate() {
-                                *p.add(j) = b;
-                            }
-                        },
-                        Some(OutArg::Buf(dst)) => dst.region_mut()[..cap].copy_from_slice(&buf),
-                        _ => {}
-                    }
-                    a += 1;
-                    matched += 1;
-                }
-                consumed_any = true;
-            }
-            b'[' => {
-                // Parse scanset specifier.
-                let mut neg = false;
-                if fmt.get(i).copied() == Some(b'^') {
-                    neg = true;
-                    i += 1;
-                }
-                let mut set = [false; 256];
-                let mut first = true;
-                let mut previous = None;
-                while let Some(c) = fmt.get(i).copied() {
-                    if c == b']' && !first {
-                        i += 1;
-                        break;
-                    }
-                    if c == b'-' && !first {
-                        if let (Some(start), Some(end)) = (previous, fmt.get(i + 1).copied()) {
-                            if end != b']' && start <= end {
-                                set[start as usize..=end as usize].fill(true);
-                                previous = Some(end);
-                                i += 2;
-                                continue;
-                            }
-                        }
-                    }
-                    set[c as usize] = true;
-                    previous = Some(c);
-                    first = false;
-                    i += 1;
-                }
-                let cap = field_limit(args, a, suppress, width.unwrap_or(usize::MAX));
-                let mut buf = Vec::new();
-                while buf.len() < cap {
-                    let b = match ops::read_one(state) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => break,
-                        Err(_) => return -1,
-                    };
-                    let inset = set[b as usize];
-                    let accept = if neg { !inset } else { inset };
-                    if accept {
-                        buf.push(b);
-                    } else {
-                        state.pushback.push(b);
-                        state.eof = false;
-                        break;
-                    }
-                }
-                if buf.is_empty() {
-                    // A nonmatching byte is a matching failure, not EOF. It
-                    // remains unread, and previous destinations stay intact.
-                    return if state.eof && !consumed_any && matched == 0 {
-                        -1
-                    } else {
-                        matched
-                    };
-                }
-                if !suppress {
-                    // SAFETY: the destination of this non-suppressed
-                    // `%[`; the caller vouches for room for the field
-                    // and its NUL.
-                    if unsafe { store_string(state, args.get_mut(a), &mut buf) }.is_err() {
-                        return matched;
-                    }
-                    a += 1;
-                    matched += 1;
-                }
-                consumed_any = true;
-            }
-            b'f' | b'e' | b'g' | b'F' | b'E' | b'G' => {
-                skip_ws(state);
-                let cap = width.unwrap_or(usize::MAX);
-                let mut buf = Vec::new();
-                let mut have_digit = false;
-                let mut have_dot = false;
-                let mut have_exp = false;
-                let mut count = 0usize;
-                // optional sign
-                if let Ok(Some(b)) = ops::read_one(state) {
-                    if b == b'+' || b == b'-' {
-                        buf.push(b);
-                        count += 1;
-                    } else {
-                        state.pushback.push(b);
-                        state.eof = false;
-                    }
-                }
-                while count < cap {
-                    let b = match ops::read_one(state) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => break,
-                        Err(_) => return -1,
-                    };
-                    if b.is_ascii_digit() {
-                        buf.push(b);
-                        count += 1;
-                        have_digit = true;
-                    } else if b == b'.' && !have_dot && !have_exp {
-                        buf.push(b);
-                        count += 1;
-                        have_dot = true;
-                    } else if (b == b'e' || b == b'E') && have_digit && !have_exp {
-                        buf.push(b);
-                        count += 1;
-                        have_exp = true;
-                        // optional sign in exponent
-                        if let Ok(Some(b)) = ops::read_one(state) {
-                            if b == b'+' || b == b'-' {
-                                buf.push(b);
-                                count += 1;
-                            } else {
-                                state.pushback.push(b);
-                                state.eof = false;
-                            }
-                        }
-                    } else {
-                        state.pushback.push(b);
-                        state.eof = false;
-                        break;
-                    }
-                }
-                if !have_digit {
-                    return if consumed_any || matched > 0 {
-                        matched
-                    } else {
-                        -1
-                    };
-                }
-                // SAFETY: `buf` holds only bytes accepted above (sign,
-                // digits, `.`, `e`/`E`), all ASCII, so it is valid UTF-8.
-                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
-                let v: f64 = s.parse().unwrap_or(0.0);
-                if !suppress {
-                    if let Some(arg) = args.get(a) {
-                        match *arg {
-                            // SAFETY: a non-null destination of this
-                            // non-suppressed conversion; the caller
-                            // guarantees an aligned, unaliased write.
-                            OutArg::Float(p) if !p.is_null() => unsafe { *p = v as f32 },
-                            // SAFETY: as for `Float`.
-                            OutArg::Double(p) if !p.is_null() => unsafe { *p = v },
-                            _ => {}
-                        }
-                    }
-                    a += 1;
-                    matched += 1;
-                }
-                consumed_any = true;
-            }
-            _ => {
-                // Unknown spec; bail.
-                return matched;
-            }
-        }
-    }
-    if matched == 0 && !consumed_any && state.eof {
+    if ops::switch_to_read(state).is_err() {
         return -1;
     }
-    matched
+    finish(&xj_scanf::vscan(&mut StreamInput { state }, fmt, args))
 }
 
-fn skip_ws(state: &mut State) {
-    loop {
-        let b = match ops::read_one(state) {
-            Ok(Some(b)) => b,
-            _ => return,
-        };
-        if !b.is_ascii_whitespace() {
-            state.pushback.push(b);
-            state.eof = false;
-            return;
-        }
-    }
+pub(crate) fn scan_stream<A: ScanArgs + ?Sized>(
+    t: crate::FILE_ptr,
+    fmt: &[u8],
+    args: &mut A,
+) -> c_int {
+    ops::with_token(t, |s| scan_state(s, fmt, args)).unwrap_or(-1)
 }
 
-/// The most field bytes a `%s` or `%[` conversion reads. A checked
-/// destination reads one byte past what it can hold, so an overlong
-/// field is detected rather than silently split.
-fn field_limit(args: &[OutArg<'_>], a: usize, suppress: bool, width: usize) -> usize {
-    match args.get(a) {
-        Some(OutArg::Buf(dst)) if !suppress => width.min(dst.max_len().saturating_add(1)),
-        _ => width,
-    }
-}
-
-/// Stores a `%s` or `%[` field and its terminator. On overflow of a
-/// checked destination, stores the prefix that fits, pushes the one
-/// extra byte back, sets `EOVERFLOW`, and returns `Err`.
-///
-/// # Safety
-///
-/// If `arg` is `Some(OutArg::Str(p))`, `p` must be valid for writes of
-/// `field.len() + 1` bytes, not accessed through any other pointer or
-/// reference during the call.
-unsafe fn store_string(
-    state: &mut State,
-    arg: Option<&mut OutArg<'_>>,
-    field: &mut Vec<u8>,
-) -> Result<(), ()> {
-    match arg {
-        // SAFETY: the caller guarantees `field.len() + 1` writable,
-        // unaliased bytes at `p`; we write exactly that many.
-        Some(OutArg::Str(p)) => unsafe {
-            let p = *p;
-            for (j, &b) in field.iter().enumerate() {
-                *p.add(j) = b;
-            }
-            *p.add(field.len()) = 0;
-        },
-        Some(OutArg::Buf(dst)) => {
-            if field.len() > dst.max_len() {
-                // `field_limit` read exactly one byte too many.
-                let extra = field.pop().expect("overlong field is nonempty");
-                state.pushback.push(extra);
-                state.eof = false;
-                dst.write_truncated(field);
-                errno::set(libc::EOVERFLOW);
-                return Err(());
-            }
-            dst.write_truncated(field);
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// # Safety
-///
-/// If `arg` is a non-null integer variant, its pointer must be valid
-/// for an aligned write of its pointee type, not accessed through any
-/// other pointer or reference during the call.
-unsafe fn write_int_to_outarg(arg: &OutArg<'_>, v: i64) {
-    // SAFETY: only non-null pointers are written, which the caller
-    // guarantees are valid, aligned and unaliased for their types.
-    unsafe {
-        match *arg {
-            OutArg::Int(p) if !p.is_null() => *p = v as libc::c_int,
-            OutArg::Short(p) if !p.is_null() => *p = v as libc::c_short,
-            OutArg::Long(p) if !p.is_null() => *p = v as libc::c_long,
-            OutArg::LongLong(p) if !p.is_null() => *p = v as libc::c_longlong,
-            OutArg::UInt(p) if !p.is_null() => *p = v as libc::c_uint,
-            OutArg::ULong(p) if !p.is_null() => *p = v as libc::c_ulong,
-            OutArg::ULongLong(p) if !p.is_null() => *p = v as libc::c_ulonglong,
-            _ => {}
-        }
-    }
-}
-
-fn parse_int_with_radix(s: &str, radix_hint: u32) -> Option<i64> {
-    let s = s.trim();
-    let neg = s.starts_with('-');
-    let body = s.trim_start_matches(|c| c == '+' || c == '-');
-    let (radix, body) = if radix_hint != 0 {
-        (radix_hint, body)
-    } else if body.starts_with("0x") || body.starts_with("0X") {
-        (16u32, &body[2..])
-    } else if body.starts_with('0') && body.len() > 1 {
-        (8u32, &body[1..])
-    } else {
-        (10u32, body)
-    };
-    let v = i64::from_str_radix(body, radix).ok()?;
-    Some(if neg { -v } else { v })
-}
-
-fn parse_uint_with_radix(s: &str, radix: u32) -> Option<u64> {
-    let (negative, body) = if let Some(body) = s.strip_prefix('-') {
-        (true, body)
-    } else {
-        (false, s.strip_prefix('+').unwrap_or(s))
-    };
-    let value = u64::from_str_radix(body, radix).ok()?;
-    Some(if negative {
-        value.wrapping_neg()
-    } else {
-        value
-    })
+pub(crate) fn scan_bytes<A: ScanArgs + ?Sized>(input: &[u8], fmt: &[u8], args: &mut A) -> c_int {
+    finish(&xj_scanf::vscan(
+        &mut xj_scanf::SliceInput::new(input),
+        fmt,
+        args,
+    ))
 }

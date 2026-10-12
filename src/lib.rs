@@ -3,6 +3,7 @@
 //! See `spec.md` for design rationale.
 
 #![cfg_attr(feature = "set_output_capture", feature(internal_output_capture))]
+#![cfg_attr(feature = "c_variadic", feature(c_variadic))]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
