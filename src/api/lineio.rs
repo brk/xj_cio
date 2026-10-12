@@ -1,7 +1,7 @@
 //! Line-oriented I/O: `fgets`, `fputs`, `puts`, `getline`, `getdelim`.
 
 use crate::ByteView;
-use xj_cfmt_core::c_bytes;
+use xj_bytes::c_bytes;
 
 use crate::CStrDest;
 use xj_zstr::ZString;

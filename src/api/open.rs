@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::ByteView;
 use crate::CStrDest;
-use xj_cfmt_core::c_bytes;
+use xj_bytes::c_bytes;
 
 use crate::buffer::BufferPolicy;
 use crate::errno;

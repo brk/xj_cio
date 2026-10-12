@@ -19,7 +19,7 @@ default = []
 set_output_capture = []
 
 [dependencies]
-xj_cfmt_core = { version = "0.1.0", path = "../../xj_cfmt/xj_cfmt_core", features = ["std"] }
+xj_bytes = { version = "0.1.0", path = "../../xj_bytes", features = ["std"] }
 slotmap = "1"
 parking_lot = "0.12"
 libc = "0.2"

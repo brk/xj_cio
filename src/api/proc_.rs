@@ -7,7 +7,7 @@ use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use xj_cfmt_core::c_bytes;
+use xj_bytes::c_bytes;
 
 use crate::buffer::BufferPolicy;
 use crate::errno;

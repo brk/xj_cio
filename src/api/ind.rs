@@ -27,7 +27,7 @@ pub fn clearerr(t: FILE_ptr) {
 /// Use `None::<&str>` when omitting the prefix.
 pub fn perror_<B: crate::ByteView + ?Sized>(prefix: Option<&B>) {
     let saved = errno::get();
-    let prefix = prefix.map(|p| xj_cfmt_core::c_bytes(p.view_bytes()));
+    let prefix = prefix.map(|p| xj_bytes::c_bytes(p.view_bytes()));
     let stderr = crate::api::stdio_::stderr();
     let _ = ops::with_token(stderr, |s| {
         if let Some(bytes) = prefix {

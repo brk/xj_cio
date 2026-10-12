@@ -57,8 +57,8 @@ pub mod capture;
 
 pub use api::*;
 pub use print::{_eprint, _eprintln, _print, _println};
-/// Shared borrowed byte inputs and bounded string destinations.
-pub use xj_cfmt_core::{ByteView, CStrBuffer, CStrDest};
+/// Shared borrowed byte inputs, C string conversion, and bounded string destinations.
+pub use xj_bytes::{ByteView, CStrBuffer, CStrDest, to_c_str};
 
 /// Opaque placeholder for translated `FILE *` handles.
 ///

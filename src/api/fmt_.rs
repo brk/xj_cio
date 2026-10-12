@@ -3,7 +3,7 @@
 //! retains its separate grammar and `OutArg` destinations.
 
 use crate::ByteView;
-use xj_cfmt_core::c_bytes;
+use xj_bytes::c_bytes;
 
 use crate::FILE_ptr;
 use crate::errno;

@@ -498,10 +498,10 @@ There is no parallel ZStr-specific copy of the API. Most functions need nothing 
 | Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, scanf formats | `&B` where `B: ByteView + ?Sized` | Pass `z` directly; the consumer stops at the first NUL or view end |
 | Reads bytes | `fwrite_`, `fwrite_items` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range. The item API limits the write to `size * count` bytes |
 | Writes bytes into a bounded region | `fread_`, `fread_items` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument. The item API limits the read to `size * count` bytes |
-| Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s` and `%[` | `xj_cfmt_core::CStrDest`, reexported by `xj_cio` and `xj_zstr` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
+| Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s` and `%[` | `xj_bytes::CStrDest`, reexported by `xj_cio` and `xj_zstr` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
 | Grows a string | `getline_`, `getdelim_` | `&mut ZString` | The `ZString` itself |
 
-Read-only parameters share `xj_cfmt_core::ByteView`, reexported by `xj_cio`. Ordinary strings (`"r"`), C strings (`c"r"`), byte slices, `ZStr`, and their owned forms can be passed directly. Unix `Path`, `PathBuf`, `OsStr`, and `OsString` also work for paths without requiring UTF-8. String consumers stop at the first NUL or view end; `fwrite_` writes the complete view. Optional generic inputs need a type when absent: use `None::<&str>` with `perror_` or `freopen_`.
+Read-only parameters share `xj_bytes::ByteView`, reexported by `xj_cio`. Ordinary strings (`"r"`), C strings (`c"r"`), byte slices, `ZStr`, and their owned forms can be passed directly. Unix `Path`, `PathBuf`, `OsStr`, and `OsString` also work for paths without requiring UTF-8. String consumers stop at the first NUL or view end; `fwrite_` writes the complete view. Optional generic inputs need a type when absent: use `None::<&str>` with `perror_` or `freopen_`.
 
 | C | Rust |
 |---|---|
@@ -524,7 +524,7 @@ C passes these functions a buffer and a size that includes the terminator. The s
 
 Passing `z.as_buffer_mut()` as a plain slice is safe but wrong. The slice has N − 1 bytes and spends one on the NUL, so `fgets_` would read at most N − 2 bytes where C reads N − 1, and a line of exactly N − 1 bytes would arrive in two pieces.
 
-`CStrDest` and `CStrBuffer` are defined in `xj_cfmt_core` and reexported by `xj_cio`, `xj_cfmt`, and `xj_zstr`. Destination support does not require `xj_zstr/cfmt`; that feature supplies formatting argument adapters. A value such as `out.limit(n)` can serve both printing engines and the functions below. Direct `Vec<u8>` formatting destinations replace their contents and grow as needed, without storing a NUL. Use `output.as_mut_slice()` to explicitly select bounded C buffer behavior.
+`CStrDest` and `CStrBuffer` are defined in `xj_bytes` and reexported by `xj_cio`, `xj_cfmt`, and `xj_zstr`. Destination support does not require `xj_zstr/cfmt`; that feature supplies formatting argument adapters. A value such as `out.limit(n)` can serve both printing engines and the functions below. Direct `Vec<u8>` formatting destinations replace their contents and grow as needed, without storing a NUL. Use `output.as_mut_slice()` to explicitly select bounded C buffer behavior.
 
 Semantics:
 

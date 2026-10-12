@@ -2,7 +2,7 @@
 
 use crate::ByteView;
 use std::sync::Arc;
-use xj_cfmt_core::c_bytes;
+use xj_bytes::c_bytes;
 
 use crate::FILE_ptr;
 use crate::buffer::BufferPolicy;
