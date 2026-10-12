@@ -3,7 +3,8 @@
 use crate::ByteView;
 use xj_cfmt_core::c_bytes;
 
-use xj_zstr::{CStrDest, ZString};
+use crate::CStrDest;
+use xj_zstr::ZString;
 
 use crate::errno;
 use crate::{EOF, FILE_ptr};
@@ -30,7 +31,7 @@ pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
         dst.terminate(0);
         return Some(0);
     }
-    let region = dst.region_mut();
+    let region = dst.payload_mut();
     let written = fgets_core(max, t, |i, b| region[i] = b)?;
     dst.terminate(written);
     Some(written)

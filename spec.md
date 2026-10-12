@@ -498,7 +498,7 @@ There is no parallel ZStr-specific copy of the API. Most functions need nothing 
 | Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, scanf formats | `&B` where `B: ByteView + ?Sized` | Pass `z` directly; the consumer stops at the first NUL or view end |
 | Reads bytes | `fwrite_`, `fwrite_items` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range. The item API limits the write to `size * count` bytes |
 | Writes bytes into a bounded region | `fread_`, `fread_items` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument. The item API limits the read to `size * count` bytes |
-| Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s`, `%c` and `%[` | `xj_zstr::CStrDest` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
+| Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s` and `%[` | `xj_cfmt_core::CStrDest`, reexported by `xj_cio` and `xj_zstr` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
 | Grows a string | `getline_`, `getdelim_` | `&mut ZString` | The `ZString` itself |
 
 Read-only parameters share `xj_cfmt_core::ByteView`, reexported by `xj_cio`. Ordinary strings (`"r"`), C strings (`c"r"`), byte slices, `ZStr`, and their owned forms can be passed directly. Unix `Path`, `PathBuf`, `OsStr`, and `OsString` also work for paths without requiring UTF-8. String consumers stop at the first NUL or view end; `fwrite_` writes the complete view. Optional generic inputs need a type when absent: use `None::<&str>` with `perror_` or `freopen_`.
@@ -514,20 +514,22 @@ Read-only parameters share `xj_cfmt_core::ByteView`, reexported by `xj_cio`. Ord
 
 ### 8.2 `CStrDest`
 
-C passes these functions a buffer and a size that includes the terminator. `CStrDest` carries the same information: a writable region, and whether a NUL is already guaranteed immediately after it. `c_size()` recovers C's size, and `max_len() = c_size() - 1` is the longest string that fits.
+C passes these functions a buffer and a size that includes the terminator. The shared core's `CStrDest` carries the backing extent and protects any reserved final NUL internally. `c_size()` recovers C's size, and `max_len() = c_size().saturating_sub(1)` is the longest string that fits. Writers use `payload_mut()`, `terminate(len)`, and `write_truncated(bytes)` rather than interpreting a slice and termination flag.
 
 - **A byte slice or array of length N** is `char buf[N]`: an N-byte region, not terminated. C size N.
-- **A `ZStr` with backing length N** hands out only its N − 1 writable bytes, because its final NUL is reserved and never writable. That NUL terminates the region, so the C size is still N.
+- **A vector's `as_mut_slice()` of length N** is the same fixed N-byte buffer; spare allocation capacity is not initialized storage and is not exposed. Writing through this view does not resize the vector.
+- **A `ZStr` with backing length N** exposes only its N − 1 bytes for arbitrary writes, protecting its reserved final NUL. Its string destination still has C size N.
 - **`ZStr::limit(n)`** gives C size `n` for any `n` up to the backing length, and panics beyond it, as slicing does.
+- **`CStrBuffer::cstr_dest().limit(n)`** selects a size for any supported buffer, including a plain byte slice. A smaller boundary need not initially contain a NUL. Zero permits no writes; bytes beyond the limit remain untouched.
 
 Passing `z.as_buffer_mut()` as a plain slice is safe but wrong. The slice has N − 1 bytes and spends one on the NUL, so `fgets_` would read at most N − 2 bytes where C reads N − 1, and a line of exactly N − 1 bytes would arrive in two pieces.
 
-`xj_cio` always enables `xj_zstr/cfmt`, including the `CSnprintfDest` adapter for `CStrDest`. A value such as `out.limit(n)` can serve the bounded formatting macros and the functions below.
+`CStrDest` and `CStrBuffer` are defined in `xj_cfmt_core` and reexported by `xj_cio`, `xj_cfmt`, and `xj_zstr`. Destination support does not require `xj_zstr/cfmt`; that feature supplies formatting argument adapters. A value such as `out.limit(n)` can serve both printing engines and the functions below. Direct `Vec<u8>` formatting destinations replace their contents and grow as needed, without storing a NUL. Use `output.as_mut_slice()` to explicitly select bounded C buffer behavior.
 
 Semantics:
 
 - **`fgets_(dst, f) -> Option<usize>`** behaves as `fgets(buf, dst.c_size(), f)`. It returns the number of bytes stored before the terminator. It returns `None` on EOF before any byte, on error, or when `c_size()` is zero, leaving `dst` unchanged on EOF.
-- **`snprintf_safe!(dst, n, fmt, …)`** uses the common C renderer for both literal and runtime formats, applies truncation and termination, and returns the full output length. `sprintf_safe!` uses the storage's capacity. The `_unchecked` forms accept raw arguments under an unsafe caller contract.
+- **`snprintf_safe!(dst, n, fmt, …)`** uses the common C renderer for both literal and runtime formats, applies truncation and termination, and returns the full output length. `sprintf_safe!` uses a bounded destination's extent. Direct vector destinations grow to hold the payload without a stored NUL; `snprintf_safe!` limits that payload to `n - 1` bytes, and `n == 0` leaves the vector unchanged. The `_unchecked` forms accept raw arguments under an unsafe caller contract.
 - **`tmpnam_(dst)` and `ctermid_(dst)` -> `Option<usize>`** write the whole name and return its length. If it does not fit, they fail with `ERANGE` and leave `dst` untouched, because a truncated path names a different file. `c_size() >= L_tmpnam` (respectively `L_ctermid`) always suffices; generated temporary names are at most `L_tmpnam - 1` bytes.
 - **The raw printing macros** (`snprintf!`, `sprintf!`) accept writable pointer destinations and require an unsafe caller. They copy only the output bytes and terminator, without constructing an oversized slice. The raw functions `fgets`, `tmpnam`, and `ctermid` retain their pointer contracts (§7.1): `fgets` shares its read loop with `fgets_`, while `tmpnam` and `ctermid` use a local array and copy out the name and NUL.
 

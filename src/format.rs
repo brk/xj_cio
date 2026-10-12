@@ -49,7 +49,7 @@ pub enum OutArg<'a> {
     /// otherwise it stops before reading. Either way the call returns
     /// the assignments made before the failed conversion and sets
     /// `errno` to `EOVERFLOW`.
-    Buf(xj_zstr::CStrDest<'a>),
+    Buf(crate::CStrDest<'a>),
 }
 
 // SAFETY: the raw pointers are written only by the

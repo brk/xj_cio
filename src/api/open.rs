@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::ByteView;
+use crate::CStrDest;
 use xj_cfmt_core::c_bytes;
-use xj_zstr::CStrDest;
 
 use crate::buffer::BufferPolicy;
 use crate::errno;
