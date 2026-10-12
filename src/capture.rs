@@ -27,7 +27,8 @@ pub(crate) type Sink = Arc<Mutex<Vec<u8>>>;
 static SINK: OnceLock<Sink> = OnceLock::new();
 
 fn sink_handle() -> Sink {
-    SINK.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+    SINK.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+        .clone()
 }
 
 /// Install our capture sink for the current thread.
@@ -44,7 +45,9 @@ pub fn disable() {
 /// Drain captured bytes accumulated since the last call. Returns
 /// them in the order they were written.
 pub fn drain() -> Vec<u8> {
-    let Some(s) = SINK.get() else { return Vec::new(); };
+    let Some(s) = SINK.get() else {
+        return Vec::new();
+    };
     let mut g = match s.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),

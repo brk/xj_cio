@@ -52,7 +52,10 @@ pub enum OpenMode {
 
 impl OpenMode {
     pub fn readable(self) -> bool {
-        matches!(self, OpenMode::R | OpenMode::Rplus | OpenMode::Wplus | OpenMode::Aplus)
+        matches!(
+            self,
+            OpenMode::R | OpenMode::Rplus | OpenMode::Wplus | OpenMode::Aplus
+        )
     }
     pub fn writable(self) -> bool {
         !matches!(self, OpenMode::R)

@@ -4,12 +4,12 @@ use crate::ByteView;
 use std::sync::Arc;
 use xj_cfmt_core::c_bytes;
 
+use crate::FILE_ptr;
 use crate::buffer::BufferPolicy;
 use crate::errno;
 use crate::handle::{Handle, MemBacking, MemMode, MemStorage};
 use crate::slots;
 use crate::state::{FILE, OpenMode, State};
-use crate::FILE_ptr;
 
 fn parse_mem_mode(bytes: &[u8]) -> Option<(MemMode, OpenMode)> {
     let mut base = None;

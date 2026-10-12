@@ -84,6 +84,8 @@ pub type FILE_ptr = *const _File;     // null means "no file" (replaces NULL)
 pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> FILE_ptr;
 pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
 pub fn fread_(dst: &mut [u8], f: FILE_ptr) -> usize;
+pub fn fread_items(dst: &mut [u8], size: usize, count: usize, f: FILE_ptr) -> usize;
+pub fn fwrite_items<B: ByteView + ?Sized>(src: &B, size: usize, count: usize, f: FILE_ptr) -> usize;
 pub fn ferror(f: FILE_ptr) -> c_int;
 // ...
 ```
@@ -93,6 +95,8 @@ The handle-based signatures are chosen over Rust-native (`&mut Stream`) ones to 
 C `char *` and `const char *` parameters and returns become `*mut u8` and `*const u8`, never `libc::c_char`. Examples are the buffers of `fgets`, `snprintf`, `tmpnam` and `setvbuf`, `*lineptr` in `getline`, the strings of `perror` and `freopen`, and `OutArg::Str`. Bytes are what the library reads and writes, and `u8` matches the safe siblings' `&[u8]` and `CStrDest` without casts. It also avoids `c_char`'s platform-dependent signedness. A pointer obtained from `CStr::as_ptr` or `CString::as_ptr` (which return `*const c_char`) is passed as `p.cast()`.
 
 Where a POSIX signature takes a raw buffer pointer, the raw version is an `unsafe fn` whose `# Safety` section states the caller's contract (§7.1), and a safe sibling with a trailing underscore takes Rust types instead: `fread_`, `fwrite_`, `fmemopen_`, `perror_`, `freopen_`, and the string functions of §8 (`fgets_`, `tmpnam_`, `ctermid_`, `getline_`, `getdelim_`). The two always share one implementation. Usually the raw version wraps its pointer and delegates to the sibling. Where the raw buffer may be uninitialized, both instead call a common core that writes only the bytes C writes (§7.1).
+
+`fread_items` and `fwrite_items` retain the C size/count arguments while accepting bounded Rust buffers. They operate on the first `size * count` bytes and return complete item counts. A zero size or count returns zero without accessing the buffer or stream; multiplication overflow sets `errno` to `EINVAL` and returns zero. Requests exceeding the available buffer panic rather than silently shortening the request. `fwrite_items` includes stored NULs and hidden bytes in its requested range.
 
 The `c_abi` module supplies shared `extern "C"` entry points for fixed-signature stdio functions. Translated direct calls use ordinary APIs when their arguments match, including borrowed C-string views for literals and guided storage. Raw C strings and `void *` buffers can use the shared argument adapters. C function references use `c_abi` so their calling convention matches the translated function-pointer type; Tenjin does not emit a local forwarding function for every stdio declaration. `fgetpos` and `fsetpos` accept a pointer type parameter for translated `fpos_t` records, under the ordinary layout and storage safety requirements. The wrappers use `u8` for C character storage and `FILE_ptr` for stream handles, and do not export libc symbol names. Variadic formatted I/O remains on the macros and plan APIs.
 
@@ -492,8 +496,8 @@ There is no parallel ZStr-specific copy of the API. Most functions need nothing 
 | What C does with the string | Functions | `xj_cio` parameter | Passing a `ZStr` |
 |---|---|---|---|
 | Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, scanf formats | `&B` where `B: ByteView + ?Sized` | Pass `z` directly; the consumer stops at the first NUL or view end |
-| Reads bytes | `fwrite_` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range |
-| Writes bytes into a bounded region | `fread_` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument |
+| Reads bytes | `fwrite_`, `fwrite_items` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range. The item API limits the write to `size * count` bytes |
+| Writes bytes into a bounded region | `fread_`, `fread_items` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument. The item API limits the read to `size * count` bytes |
 | Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s`, `%c` and `%[` | `xj_zstr::CStrDest` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
 | Grows a string | `getline_`, `getdelim_` | `&mut ZString` | The `ZString` itself |
 

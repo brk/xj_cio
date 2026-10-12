@@ -2,8 +2,8 @@
 
 use std::ffi::CStr;
 
-use crate::errno;
 use crate::FILE_ptr;
+use crate::errno;
 
 use super::ops;
 

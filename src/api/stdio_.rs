@@ -79,19 +79,25 @@ fn make_stdio(handle: Handle, mode: OpenMode, policy: BufferPolicy) -> FILE_ptr 
 }
 
 pub fn stdin() -> FILE_ptr {
-    std::ptr::without_provenance(*STDIN_TOK.get_or_init(|| {
-        make_stdio(Handle::StdinShared, OpenMode::R, BufferPolicy::Full).addr()
-    }))
+    std::ptr::without_provenance(
+        *STDIN_TOK.get_or_init(|| {
+            make_stdio(Handle::StdinShared, OpenMode::R, BufferPolicy::Full).addr()
+        }),
+    )
 }
 
 pub fn stdout() -> FILE_ptr {
-    std::ptr::without_provenance(*STDOUT_TOK.get_or_init(|| {
-        make_stdio(Handle::StdoutShared, OpenMode::W, BufferPolicy::Line).addr()
-    }))
+    std::ptr::without_provenance(
+        *STDOUT_TOK.get_or_init(|| {
+            make_stdio(Handle::StdoutShared, OpenMode::W, BufferPolicy::Line).addr()
+        }),
+    )
 }
 
 pub fn stderr() -> FILE_ptr {
-    std::ptr::without_provenance(*STDERR_TOK.get_or_init(|| {
-        make_stdio(Handle::StderrShared, OpenMode::W, BufferPolicy::None).addr()
-    }))
+    std::ptr::without_provenance(
+        *STDERR_TOK.get_or_init(|| {
+            make_stdio(Handle::StderrShared, OpenMode::W, BufferPolicy::None).addr()
+        }),
+    )
 }

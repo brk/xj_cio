@@ -69,7 +69,11 @@ unsafe impl Sync for OutArg<'_> {}
 ///
 /// `args` must meet the requirements in [`OutArg`]'s "Pointer
 /// validity" section for the conversions in `fmt`.
-pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) -> core::ffi::c_int {
+pub unsafe fn run_scanf(
+    state: &mut State,
+    fmt: &[u8],
+    args: &mut [OutArg<'_>],
+) -> core::ffi::c_int {
     if !state.mode.readable() {
         errno::set(libc::EBADF);
         state.err = true;
@@ -133,14 +137,23 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
         let mut w = 0usize;
         let mut have_width = false;
         while let Some(c) = fmt.get(i).copied() {
-            if c.is_ascii_digit() { w = w * 10 + (c - b'0') as usize; i += 1; have_width = true; }
-            else { break; }
+            if c.is_ascii_digit() {
+                w = w * 10 + (c - b'0') as usize;
+                i += 1;
+                have_width = true;
+            } else {
+                break;
+            }
         }
-        if have_width { width = Some(w); }
+        if have_width {
+            width = Some(w);
+        }
         // Length modifier — ignored.
         loop {
             match fmt.get(i).copied() {
-                Some(b'h') | Some(b'l') | Some(b'L') | Some(b'z') | Some(b'j') | Some(b't') => i += 1,
+                Some(b'h') | Some(b'l') | Some(b'L') | Some(b'z') | Some(b'j') | Some(b't') => {
+                    i += 1
+                }
                 _ => break,
             }
         }
@@ -190,8 +203,18 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
                     };
                     let ok = match conv {
                         b'd' | b'u' => b.is_ascii_digit(),
-                        b'i' => b.is_ascii_digit() || b == b'x' || b == b'X' || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b),
-                        b'x' | b'X' => b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b),
+                        b'i' => {
+                            b.is_ascii_digit()
+                                || b == b'x'
+                                || b == b'X'
+                                || (b'a'..=b'f').contains(&b)
+                                || (b'A'..=b'F').contains(&b)
+                        }
+                        b'x' | b'X' => {
+                            b.is_ascii_digit()
+                                || (b'a'..=b'f').contains(&b)
+                                || (b'A'..=b'F').contains(&b)
+                        }
                         b'o' => (b'0'..=b'7').contains(&b),
                         _ => false,
                     };
@@ -252,7 +275,11 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
                     buf.push(b);
                 }
                 if buf.is_empty() {
-                    return if consumed_any || matched > 0 { matched } else { -1 };
+                    return if consumed_any || matched > 0 {
+                        matched
+                    } else {
+                        -1
+                    };
                 }
                 if !suppress {
                     // SAFETY: the destination of this non-suppressed
@@ -286,7 +313,11 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
                     buf.push(b);
                 }
                 if buf.len() < cap {
-                    return if consumed_any || matched > 0 { matched } else { -1 };
+                    return if consumed_any || matched > 0 {
+                        matched
+                    } else {
+                        -1
+                    };
                 }
                 if !suppress {
                     match args.get_mut(a) {
@@ -386,9 +417,11 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
                 // optional sign
                 if let Ok(Some(b)) = ops::read_one(state) {
                     if b == b'+' || b == b'-' {
-                        buf.push(b); count += 1;
+                        buf.push(b);
+                        count += 1;
                     } else {
-                        state.pushback.push(b); state.eof = false;
+                        state.pushback.push(b);
+                        state.eof = false;
                     }
                 }
                 while count < cap {
@@ -398,26 +431,39 @@ pub unsafe fn run_scanf(state: &mut State, fmt: &[u8], args: &mut [OutArg<'_>]) 
                         Err(_) => return -1,
                     };
                     if b.is_ascii_digit() {
-                        buf.push(b); count += 1; have_digit = true;
+                        buf.push(b);
+                        count += 1;
+                        have_digit = true;
                     } else if b == b'.' && !have_dot && !have_exp {
-                        buf.push(b); count += 1; have_dot = true;
+                        buf.push(b);
+                        count += 1;
+                        have_dot = true;
                     } else if (b == b'e' || b == b'E') && have_digit && !have_exp {
-                        buf.push(b); count += 1; have_exp = true;
+                        buf.push(b);
+                        count += 1;
+                        have_exp = true;
                         // optional sign in exponent
                         if let Ok(Some(b)) = ops::read_one(state) {
                             if b == b'+' || b == b'-' {
-                                buf.push(b); count += 1;
+                                buf.push(b);
+                                count += 1;
                             } else {
-                                state.pushback.push(b); state.eof = false;
+                                state.pushback.push(b);
+                                state.eof = false;
                             }
                         }
                     } else {
-                        state.pushback.push(b); state.eof = false;
+                        state.pushback.push(b);
+                        state.eof = false;
                         break;
                     }
                 }
                 if !have_digit {
-                    return if consumed_any || matched > 0 { matched } else { -1 };
+                    return if consumed_any || matched > 0 {
+                        matched
+                    } else {
+                        -1
+                    };
                 }
                 // SAFETY: `buf` holds only bytes accepted above (sign,
                 // digits, `.`, `e`/`E`), all ASCII, so it is valid UTF-8.
@@ -485,7 +531,11 @@ fn field_limit(args: &[OutArg<'_>], a: usize, suppress: bool, width: usize) -> u
 /// If `arg` is `Some(OutArg::Str(p))`, `p` must be valid for writes of
 /// `field.len() + 1` bytes, not accessed through any other pointer or
 /// reference during the call.
-unsafe fn store_string(state: &mut State, arg: Option<&mut OutArg<'_>>, field: &mut Vec<u8>) -> Result<(), ()> {
+unsafe fn store_string(
+    state: &mut State,
+    arg: Option<&mut OutArg<'_>>,
+    field: &mut Vec<u8>,
+) -> Result<(), ()> {
     match arg {
         // SAFETY: the caller guarantees `field.len() + 1` writable,
         // unaliased bytes at `p`; we write exactly that many.
@@ -559,5 +609,9 @@ fn parse_uint_with_radix(s: &str, radix: u32) -> Option<u64> {
         (false, s.strip_prefix('+').unwrap_or(s))
     };
     let value = u64::from_str_radix(body, radix).ok()?;
-    Some(if negative { value.wrapping_neg() } else { value })
+    Some(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
 }

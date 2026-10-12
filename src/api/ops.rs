@@ -190,7 +190,10 @@ impl<'a> UninitDest<'a> {
     const SCRATCH_MAX: usize = 64 * 1024;
 
     pub fn new(dst: &'a mut [MaybeUninit<u8>]) -> Self {
-        UninitDest { dst, scratch: Vec::new() }
+        UninitDest {
+            dst,
+            scratch: Vec::new(),
+        }
     }
 }
 
@@ -230,7 +233,10 @@ pub fn read_into(state: &mut State, dst: &mut [u8]) -> std::io::Result<usize> {
 /// [`read_into`] for any [`ReadDest`]. Stores only the bytes it
 /// reads, front to back: `dst[..n]` for a returned `Ok(n)`, and on
 /// `Err` just those read before the error.
-pub fn read_into_dest<D: ReadDest + ?Sized>(state: &mut State, dst: &mut D) -> std::io::Result<usize> {
+pub fn read_into_dest<D: ReadDest + ?Sized>(
+    state: &mut State,
+    dst: &mut D,
+) -> std::io::Result<usize> {
     switch_to_read(state)?;
     let len = dst.dest_len();
     let mut written = 0;
@@ -247,7 +253,10 @@ pub fn read_into_dest<D: ReadDest + ?Sized>(state: &mut State, dst: &mut D) -> s
         if state.buffer.cursor < state.buffer.fill {
             let avail = state.buffer.fill - state.buffer.cursor;
             let take = avail.min(len - written);
-            dst.put(written, &state.buffer.data[state.buffer.cursor..state.buffer.cursor + take]);
+            dst.put(
+                written,
+                &state.buffer.data[state.buffer.cursor..state.buffer.cursor + take],
+            );
             state.buffer.cursor += take;
             written += take;
             continue;
@@ -330,8 +339,8 @@ fn write_through_buffer(state: &mut State, src: &[u8]) -> std::io::Result<usize>
         state.buffer.dirty = true;
         written += take;
 
-        let needs_flush_for_newline = state.buffer.policy == BufferPolicy::Line
-            && chunk.contains(&b'\n');
+        let needs_flush_for_newline =
+            state.buffer.policy == BufferPolicy::Line && chunk.contains(&b'\n');
         let needs_flush_for_full = state.buffer.fill == cap;
         if needs_flush_for_newline || needs_flush_for_full {
             flush_internal(state)?;

@@ -5,10 +5,10 @@ use crate::buffer::{Buffer, BufferPolicy};
 use crate::errno;
 use crate::handle::Handle;
 use crate::slots;
-use crate::{BUFSIZ, EOF, FILE_ptr, _IOFBF, _IOLBF, _IONBF};
+use crate::{_IOFBF, _IOLBF, _IONBF, BUFSIZ, EOF, FILE_ptr};
 
 use super::ops;
-use super::stdio_::{stdio_mode, StdioMode};
+use super::stdio_::{StdioMode, stdio_mode};
 
 /// `fflush(fp)` — drains the write buffer to the kernel. A null `fp`
 /// flushes every open writable stream.

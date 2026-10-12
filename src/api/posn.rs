@@ -3,9 +3,9 @@
 
 use std::io::SeekFrom;
 
+use crate::FILE_ptr;
 use crate::errno;
 use crate::state::Direction;
-use crate::FILE_ptr;
 
 use super::ops;
 

@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use parking_lot::ReentrantMutexGuard;
 
+use crate::FILE_ptr;
 use crate::slots;
 use crate::state::{FILE, State};
-use crate::FILE_ptr;
 
 /// One lock acquisition. Field order matters: `guard` is dropped
 /// before `_arc`, so the mutex (which lives inside `*_arc`) is still
@@ -53,14 +53,22 @@ fn make_entry(arc: Arc<FILE>, token: FILE_ptr) -> LockEntry {
     // the entry is only ever stored in this thread's `LOCK_STACK`, so
     // the guard is released on the thread that acquired it.
     let g: ReentrantMutexGuard<'static, RefCell<State>> = unsafe { std::mem::transmute(g) };
-    LockEntry { guard: ManuallyDrop::new(g), _arc: arc, token }
+    LockEntry {
+        guard: ManuallyDrop::new(g),
+        _arc: arc,
+        token,
+    }
 }
 
 fn make_entry_try(arc: Arc<FILE>, token: FILE_ptr) -> Option<LockEntry> {
     let g = arc.raw_try_lock()?;
     // SAFETY: as in `make_entry`.
     let g: ReentrantMutexGuard<'static, RefCell<State>> = unsafe { std::mem::transmute(g) };
-    Some(LockEntry { guard: ManuallyDrop::new(g), _arc: arc, token })
+    Some(LockEntry {
+        guard: ManuallyDrop::new(g),
+        _arc: arc,
+        token,
+    })
 }
 
 pub fn flockfile(t: FILE_ptr) {

@@ -14,8 +14,8 @@ struct Input {
 
 impl Input {
     fn new(name: &str, contents: &[u8]) -> Self {
-        let path = std::env::temp_dir()
-            .join(format!("xj_cio_zstr_{}_{}", std::process::id(), name));
+        let path =
+            std::env::temp_dir().join(format!("xj_cio_zstr_{}_{}", std::process::id(), name));
         std::fs::write(&path, contents).unwrap();
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
         let stream = fopen(&c_path, c"r");
@@ -43,7 +43,11 @@ fn fgets_into_a_zstr_reads_as_many_bytes_as_c() {
     assert_eq!(fgets_((&mut line).into(), input.stream), Some(2));
     assert_eq!(line.as_bytes(), b"fg");
     assert_eq!(fgets_((&mut line).into(), input.stream), None);
-    assert_eq!(line.as_bytes(), b"fg", "EOF leaves the destination unchanged");
+    assert_eq!(
+        line.as_bytes(),
+        b"fg",
+        "EOF leaves the destination unchanged"
+    );
 }
 
 #[test]
@@ -145,15 +149,17 @@ fn scanf_string_fields_fit_a_zstr_exactly() {
     let mut set = [b'-'; 3];
     let mut number: libc::c_int = 0;
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-    let r = unsafe { fscanf(
-        input.stream,
-        c"%s %d %[xy]",
-        &mut [
-            OutArg::Buf((&mut word).into()),
-            OutArg::Int(&mut number),
-            OutArg::Buf((&mut set).into()),
-        ],
-    ) };
+    let r = unsafe {
+        fscanf(
+            input.stream,
+            c"%s %d %[xy]",
+            &mut [
+                OutArg::Buf((&mut word).into()),
+                OutArg::Int(&mut number),
+                OutArg::Buf((&mut set).into()),
+            ],
+        )
+    };
     assert_eq!(r, 3);
     assert_eq!(word.as_bytes(), b"abcd");
     assert_eq!(number, 42);
@@ -168,11 +174,13 @@ fn scanf_overflow_stores_the_prefix_and_leaves_the_rest_unread() {
     let mut number: libc::c_int = 0;
     errno::set(0);
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-    let r = unsafe { fscanf(
-        input.stream,
-        c"%s %d",
-        &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut number)],
-    ) };
+    let r = unsafe {
+        fscanf(
+            input.stream,
+            c"%s %d",
+            &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut number)],
+        )
+    };
     assert_eq!(r, 0);
     assert_eq!(errno::get(), libc::EOVERFLOW);
     assert_eq!(word.as_bytes(), b"abcd");
@@ -195,7 +203,13 @@ fn scanf_chars_fill_the_region_without_a_terminator() {
     let input = Input::new("scanf_chars", b"abcdefgh");
     let mut exact = *b"xxx";
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-    let r = unsafe { fscanf(input.stream, c"%3c", &mut [OutArg::Buf((&mut exact).into())]) };
+    let r = unsafe {
+        fscanf(
+            input.stream,
+            c"%3c",
+            &mut [OutArg::Buf((&mut exact).into())],
+        )
+    };
     assert_eq!(r, 1);
     assert_eq!(&exact, b"abc");
 
@@ -203,11 +217,21 @@ fn scanf_chars_fill_the_region_without_a_terminator() {
     let mut small = ZString::new(b"xx");
     errno::set(0);
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-    let r = unsafe { fscanf(input.stream, c"%3c", &mut [OutArg::Buf((&mut small).into())]) };
+    let r = unsafe {
+        fscanf(
+            input.stream,
+            c"%3c",
+            &mut [OutArg::Buf((&mut small).into())],
+        )
+    };
     assert_eq!(r, 0);
     assert_eq!(errno::get(), libc::EOVERFLOW);
     assert_eq!(small.as_buffer(), b"xx\0");
-    assert_eq!(fgetc(input.stream), b'd' as libc::c_int, "nothing was consumed");
+    assert_eq!(
+        fgetc(input.stream),
+        b'd' as libc::c_int,
+        "nothing was consumed"
+    );
 }
 
 #[test]

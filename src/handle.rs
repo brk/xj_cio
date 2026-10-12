@@ -70,7 +70,10 @@ pub enum MemStorage {
     /// nothing else accesses those bytes while a `&`/`&mut` borrow of
     /// this `MemStorage` is live. The only constructor, `fmemopen`,
     /// takes this as its safety precondition.
-    User { ptr: *mut u8, len: usize },
+    User {
+        ptr: *mut u8,
+        len: usize,
+    },
     Owned(Vec<u8>),
 }
 

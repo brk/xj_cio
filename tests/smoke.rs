@@ -84,11 +84,13 @@ fn fscanf_two_ints_with_whitespace() {
     let mut a: libc::c_int = -1;
     let mut b: libc::c_int = -1;
     // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-    let r = unsafe { fscanf(
-        fp,
-        &cstr("%d %d"),
-        &mut [OutArg::Int(&mut a as *mut _), OutArg::Int(&mut b as *mut _)],
-    ) };
+    let r = unsafe {
+        fscanf(
+            fp,
+            &cstr("%d %d"),
+            &mut [OutArg::Int(&mut a as *mut _), OutArg::Int(&mut b as *mut _)],
+        )
+    };
     assert_eq!(r, 2);
     assert_eq!(a, 12);
     assert_eq!(b, 34);
@@ -137,18 +139,20 @@ fn fscanf_unsigned_signs_match_libc() {
     let [a, b, c, d, e] = &mut actual;
     assert_eq!(
         // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-        unsafe { fscanf(
-            stream,
-            &format,
-            &mut [
-                OutArg::UInt(a),
-                OutArg::UInt(b),
-                OutArg::UInt(c),
-                OutArg::UInt(d),
-                OutArg::UInt(e),
-                OutArg::ULongLong(&mut actual_wide),
-            ]
-        ) },
+        unsafe {
+            fscanf(
+                stream,
+                &format,
+                &mut [
+                    OutArg::UInt(a),
+                    OutArg::UInt(b),
+                    OutArg::UInt(c),
+                    OutArg::UInt(d),
+                    OutArg::UInt(e),
+                    OutArg::ULongLong(&mut actual_wide),
+                ],
+            )
+        },
         matched
     );
     assert_eq!(actual, expected);
@@ -198,11 +202,13 @@ fn fscanf_scanset_ranges_match_libc() {
         let mut actual = [0u8; 128];
         assert_eq!(
             // SAFETY: each raw `OutArg` points to a live local large enough for its conversion.
-            unsafe { fscanf(
-                stream,
-                &format,
-                &mut [OutArg::Str(actual.as_mut_ptr().cast())]
-            ) },
+            unsafe {
+                fscanf(
+                    stream,
+                    &format,
+                    &mut [OutArg::Str(actual.as_mut_ptr().cast())],
+                )
+            },
             matched
         );
         assert_eq!(actual, expected, "input {input:?}, format {format:?}");

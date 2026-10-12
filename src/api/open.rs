@@ -252,7 +252,10 @@ pub fn fileno(t: FILE_ptr) -> core::ffi::c_int {
 
 pub fn tmpfile() -> FILE_ptr {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     // SAFETY: `getpid` has no preconditions.
     let pid = unsafe { libc::getpid() };
     for i in 0..32 {
@@ -262,7 +265,12 @@ pub fn tmpfile() -> FILE_ptr {
         match o.open(&path) {
             Ok(f) => {
                 let _ = std::fs::remove_file(&path); // unlinked-but-open
-                let state = State::new(Handle::Regular(f), OpenMode::Wplus, BufferPolicy::Full, BUFSIZ);
+                let state = State::new(
+                    Handle::Regular(f),
+                    OpenMode::Wplus,
+                    BufferPolicy::Full,
+                    BUFSIZ,
+                );
                 return slots::insert(Arc::new(FILE::new(state)));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -416,7 +424,11 @@ pub unsafe fn ctermid(buf: *mut u8) -> *mut u8 {
 
 /// Internal helper: take ownership of a raw fd and wrap it as a stream.
 pub(crate) fn from_raw_handle(handle: Handle, mode: OpenMode, policy: BufferPolicy) -> FILE_ptr {
-    let cap = if matches!(policy, BufferPolicy::None) { 0 } else { BUFSIZ };
+    let cap = if matches!(policy, BufferPolicy::None) {
+        0
+    } else {
+        BUFSIZ
+    };
     let state = State::new(handle, mode, policy, cap);
     slots::insert(Arc::new(FILE::new(state)))
 }
