@@ -64,7 +64,7 @@ fn fprintf_renders_int_and_string() {
 
     let fp = fopen(&p, &cstr("w"));
     let s = cstr("world");
-    let r = xj_cio::fprintf_safe!(fp, c"%d %s\n", 42, s);
+    let r = xj_cio::fprintf!(fp, c"%d %s\n", 42, s);
     assert!(r > 0);
     fclose(fp);
 

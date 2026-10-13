@@ -105,18 +105,18 @@ fn getdelim_counts_bytes_past_an_embedded_nul() {
 #[test]
 fn snprintf_into_a_zstr_uses_every_writable_byte() {
     let mut owned = ZString::with_capacity(4);
-    assert_eq!(xj_cio::sprintf_safe!(owned, c"%s-%d", c"ab", 7), 4);
+    assert_eq!(xj_cio::sprintf!(owned, c"%s-%d", c"ab", 7), 4);
     assert_eq!(owned.as_bytes(), b"ab-7");
 
-    assert_eq!(xj_cio::snprintf_safe!(owned, 3, c"%d", 12345), 5);
+    assert_eq!(xj_cio::snprintf!(owned, 3, c"%d", 12345), 5);
     assert_eq!(owned.as_buffer(), b"12\07\0");
 
     let mut raw = [b'x'; 4];
     // SAFETY: the destination is a live local array of length `n`.
-    let n = unsafe { xj_cio::snprintf!(raw.as_mut_ptr(), raw.len(), c"%d", 12345) };
+    let n = unsafe { xj_cio::snprintf_raw!(raw.as_mut_ptr(), raw.len(), c"%d", 12345) };
     assert_eq!((n, &raw), (5, b"123\0"));
     // SAFETY: the destination is a live array large enough for the output and its NUL.
-    let n = unsafe { xj_cio::sprintf!(raw.as_mut_ptr(), c"%d", 9) };
+    let n = unsafe { xj_cio::sprintf_raw!(raw.as_mut_ptr(), c"%d", 9) };
     assert_eq!(n, 1);
     assert_eq!(&raw, b"9\03\0");
 }

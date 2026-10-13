@@ -155,7 +155,7 @@ pub fn format_error(e: xj_cfmt::cformat::Error) -> i32 {
 /// Execute a pre-parsed call, including a va_list call.
 /// # Safety
 /// Raw arguments must satisfy the common renderer's contracts.
-pub unsafe fn fprintf_plan(
+pub unsafe fn fprintf_plan_raw(
     t: FILE_ptr,
     plan: &xj_cfmt::cformat::Plan<'_>,
     args: &[Arg<'_>],
@@ -163,9 +163,9 @@ pub unsafe fn fprintf_plan(
     crate::emit_c(t, unsafe { xj_cfmt::printf::render_plan(plan, args) })
 }
 /// # Safety
-/// As for [`fprintf_plan`].
-pub unsafe fn printf_plan(plan: &xj_cfmt::cformat::Plan<'_>, args: &[Arg<'_>]) -> i32 {
-    unsafe { fprintf_plan(crate::stdout(), plan, args) }
+/// As for [`fprintf_plan_raw`].
+pub unsafe fn printf_plan_raw(plan: &xj_cfmt::cformat::Plan<'_>, args: &[Arg<'_>]) -> i32 {
+    unsafe { fprintf_plan_raw(crate::stdout(), plan, args) }
 }
 /// # Safety
 /// Raw arguments must satisfy the common renderer's contracts. `buf` must

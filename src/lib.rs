@@ -95,19 +95,19 @@ pub use xj_cfmt::cformat;
 pub use xj_cfmt::printf::{Adapt, SafeAdapt};
 /// C buffer macros, sharing the stream renderer.
 pub use xj_cfmt::{
-    snprintf, snprintf_safe, snprintf_unchecked, sprintf, sprintf_safe, sprintf_unchecked,
+    snprintf, snprintf_raw, snprintf_unchecked, sprintf, sprintf_raw, sprintf_unchecked,
 };
 
 /// C printf. Requires an unsafe caller for raw arguments.
 #[macro_export]
-macro_rules! printf {
+macro_rules! printf_raw {
     ($fmt:expr $(, $arg:expr)* $(,)?) => {
-        $crate::fprintf!($crate::stdout(), $fmt $(, $arg)*)
+        $crate::fprintf_raw!($crate::stdout(), $fmt $(, $arg)*)
     };
 }
 /// C fprintf. Requires an unsafe caller for raw arguments.
 #[macro_export]
-macro_rules! fprintf {
+macro_rules! fprintf_raw {
     ($stream:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {
         $crate::emit_c($stream, $crate::__cfmt::printf::render(
             $crate::__cfmt::ByteView::view_bytes(&$fmt), &[$($crate::Adapt::c_arg(&$arg)),*]))
@@ -115,14 +115,14 @@ macro_rules! fprintf {
 }
 /// Safe C printf, using borrowed string views and scalar arguments.
 #[macro_export]
-macro_rules! printf_safe {
+macro_rules! printf {
     ($fmt:expr $(, $arg:expr)* $(,)?) => {
-        $crate::fprintf_safe!($crate::stdout(), $fmt $(, $arg)*)
+        $crate::fprintf!($crate::stdout(), $fmt $(, $arg)*)
     };
 }
 /// Safe C fprintf, using borrowed string views and scalar arguments.
 #[macro_export]
-macro_rules! fprintf_safe {
+macro_rules! fprintf {
     ($stream:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {{
         $crate::__cfmt::__private::validate_safe_format!($fmt);
         $crate::emit_c($stream, $crate::__cfmt::printf::render_safe(

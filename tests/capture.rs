@@ -34,7 +34,7 @@ fn print_macro_routed_through_xj_cio_buffer_in_capture_mode() {
     // capture, we instead verify that toggling capture on doesn't
     // panic and that the public surface compiles.
     std::print!("from-print ");
-    let _ = xj_cio::fprintf_safe!(stdout(), c"from-fprintf %d\n", 7);
+    let _ = xj_cio::fprintf!(stdout(), c"from-fprintf %d\n", 7);
     let _ = fflush(stdout());
 
     std::io::set_output_capture(prev);
