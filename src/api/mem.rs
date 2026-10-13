@@ -1,4 +1,4 @@
-//! In-memory streams: `fmemopen`, `open_memstream`.
+//! In-memory streams: `fmemopen_raw`, `open_memstream`.
 
 use crate::ByteView;
 use std::sync::Arc;
@@ -83,20 +83,20 @@ fn open_mem<M: ByteView + ?Sized>(storage: MemStorage, mode: &M) -> FILE_ptr {
     slots::insert(Arc::new(FILE::new(state)))
 }
 
-/// Safe equivalent of `fmemopen` over an owned buffer. The stream
+/// Safe equivalent of `fmemopen_raw` over an owned buffer. The stream
 /// takes ownership of `buf`; its capacity is `buf.len()`. Returns a
 /// null handle (with `errno`) on invalid mode or empty buffer.
-pub fn fmemopen_<M: ByteView + ?Sized>(buf: Vec<u8>, mode: &M) -> FILE_ptr {
+pub fn fmemopen<M: ByteView + ?Sized>(buf: Vec<u8>, mode: &M) -> FILE_ptr {
     open_mem(MemStorage::Owned(buf), mode)
 }
 
-/// `fmemopen(buf, size, mode)`. A null `buf` allocates an internal
-/// buffer of `size` bytes, as [`fmemopen_`] does.
+/// `fmemopen_raw(buf, size, mode)`. A null `buf` allocates an internal
+/// buffer of `size` bytes, as [`fmemopen`] does.
 ///
 /// # Safety
 ///
 /// If `buf` is non-null, the stream may access it until `fclose`,
-/// `pclose` or `freopen` on the stream has returned. If it is never
+/// `pclose` or `freopen_raw` on the stream has returned. If it is never
 /// closed, that period lasts to the end of the program, including the
 /// `atexit` flush. If the close happens while the calling thread holds
 /// a [`StreamGuard`] on the stream, `fclose` defers its work, and the
@@ -115,7 +115,7 @@ pub fn fmemopen_<M: ByteView + ?Sized>(buf: Vec<u8>, mode: &M) -> FILE_ptr {
 /// programs do after `fflush`.
 ///
 /// [`StreamGuard`]: crate::StreamGuard
-pub unsafe fn fmemopen<M: ByteView + ?Sized>(
+pub unsafe fn fmemopen_raw<M: ByteView + ?Sized>(
     buf: *mut libc::c_void,
     size: libc::size_t,
     mode: &M,
@@ -125,7 +125,7 @@ pub unsafe fn fmemopen<M: ByteView + ?Sized>(
             errno::set(libc::EINVAL);
             return std::ptr::null();
         }
-        return fmemopen_(vec![0u8; size], mode);
+        return fmemopen(vec![0u8; size], mode);
     }
     // The caller's contract above is exactly the `MemStorage::User`
     // invariant, so the stream may build slices over `buf`.
@@ -136,21 +136,6 @@ pub unsafe fn fmemopen<M: ByteView + ?Sized>(
         },
         mode,
     )
-}
-
-/// Opens a raw memory buffer with a Rust mode string. The mode does not
-/// need a terminating NUL. A null buffer allocates internal storage.
-///
-/// # Safety
-///
-/// A non-null `buf` must satisfy [`fmemopen`]'s storage and access contract:
-/// `size` initialized bytes must remain readable and writable until the
-/// stream finishes using them, and accesses must not conflict with stream
-/// operations. This lifetime can extend beyond `fclose` when closing is
-/// deferred by a stream guard. See [`fmemopen`] for the complete requirements.
-pub unsafe fn fmemopen_raw(buf: *mut libc::c_void, size: libc::size_t, mode: &str) -> FILE_ptr {
-    // SAFETY: the caller supplies fmemopen's raw storage requirements.
-    unsafe { fmemopen(buf, size, mode) }
 }
 
 /// `open_memstream(*bufp, *sizep)` is not implemented in v1; returns a

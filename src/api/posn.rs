@@ -1,5 +1,5 @@
 //! Positioning: `fseek`, `fseeko`, `ftell`, `ftello`, `rewind`,
-//! `fgetpos`, `fsetpos`.
+//! `fgetpos_raw`, `fsetpos_raw`.
 
 use std::io::SeekFrom;
 
@@ -120,7 +120,7 @@ pub fn rewind(t: FILE_ptr) {
     });
 }
 
-/// `fgetpos`/`fsetpos` stash the position inside the user's `fpos_t`.
+/// `fgetpos_raw`/`fsetpos_raw` stash the position inside the user's `fpos_t`.
 /// We store an `i64` byte offset (libc's `fpos_t` is opaque so callers
 /// can't tell the difference).
 const _: () = assert!(size_of::<libc::fpos_t>() >= size_of::<i64>());
@@ -130,7 +130,7 @@ const _: () = assert!(size_of::<libc::fpos_t>() >= size_of::<i64>());
 /// `pos` must be null (which fails with `EINVAL`) or valid for writes
 /// of a `libc::fpos_t`, and not accessed through any other pointer or
 /// reference during the call. No alignment is required.
-pub unsafe fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
+pub unsafe fn fgetpos_raw(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;
@@ -156,9 +156,9 @@ pub unsafe fn fgetpos(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
 ///
 /// `pos` must be null (which fails with `EINVAL`) or valid for reads of
 /// a `libc::fpos_t` whose first `size_of::<i64>()` bytes are
-/// initialized (e.g. one filled in by [`fgetpos`]), and not written
+/// initialized (e.g. one filled in by [`fgetpos_raw`]), and not written
 /// through any other pointer during the call. No alignment is required.
-pub unsafe fn fsetpos(t: FILE_ptr, pos: *const libc::fpos_t) -> core::ffi::c_int {
+pub unsafe fn fsetpos_raw(t: FILE_ptr, pos: *const libc::fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;

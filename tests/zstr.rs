@@ -36,13 +36,13 @@ fn fgets_into_a_zstr_reads_as_many_bytes_as_c() {
     // C: fgets(buf, 6, f) with char buf[6] reads "abcde" whole.
     let input = Input::new("fgets_zstr", b"abcde\nfg");
     let mut line = ZString::with_capacity(5);
-    assert_eq!(fgets_((&mut line).into(), input.stream), Some(5));
+    assert_eq!(fgets((&mut line).into(), input.stream), Some(5));
     assert_eq!(line.as_bytes(), b"abcde");
-    assert_eq!(fgets_((&mut line).into(), input.stream), Some(1));
+    assert_eq!(fgets((&mut line).into(), input.stream), Some(1));
     assert_eq!(line.as_buffer(), b"\n\0cde\0");
-    assert_eq!(fgets_((&mut line).into(), input.stream), Some(2));
+    assert_eq!(fgets((&mut line).into(), input.stream), Some(2));
     assert_eq!(line.as_bytes(), b"fg");
-    assert_eq!(fgets_((&mut line).into(), input.stream), None);
+    assert_eq!(fgets((&mut line).into(), input.stream), None);
     assert_eq!(
         line.as_bytes(),
         b"fg",
@@ -54,19 +54,19 @@ fn fgets_into_a_zstr_reads_as_many_bytes_as_c() {
 fn fgets_on_a_slice_and_a_limit_keep_c_sizes() {
     let input = Input::new("fgets_sizes", b"abcdef\n");
     let mut array = [b'x'; 4];
-    assert_eq!(fgets_((&mut array).into(), input.stream), Some(3));
+    assert_eq!(fgets((&mut array).into(), input.stream), Some(3));
     assert_eq!(&array, b"abc\0");
 
     let mut line = ZString::new(b"xxxxx");
-    assert_eq!(fgets_(line.limit(3), input.stream), Some(2));
+    assert_eq!(fgets(line.limit(3), input.stream), Some(2));
     assert_eq!(line.as_buffer(), b"de\0xx\0");
 
     // fgets(buf, 1, f) stores only the terminator; fgets(buf, 0, f) fails.
-    assert_eq!(fgets_(line.limit(1), input.stream), Some(0));
+    assert_eq!(fgets(line.limit(1), input.stream), Some(0));
     assert_eq!(line.as_bytes(), b"");
-    assert_eq!(fgets_(line.limit(0), input.stream), None);
+    assert_eq!(fgets(line.limit(0), input.stream), None);
     let mut empty = ZString::with_capacity(0);
-    assert_eq!(fgets_((&mut empty).into(), input.stream), Some(0));
+    assert_eq!(fgets((&mut empty).into(), input.stream), Some(0));
 }
 
 #[test]
@@ -78,27 +78,27 @@ fn getline_grows_a_zstring_and_keeps_the_delimiter() {
     let input = Input::new("getline", &contents);
 
     let mut line = ZString::default();
-    assert_eq!(getline_(&mut line, input.stream), 6);
+    assert_eq!(getline(&mut line, input.stream), 6);
     assert_eq!(line.as_bytes(), b"short\n");
     assert_eq!(line.capacity(), 127);
 
-    assert_eq!(getline_(&mut line, input.stream), 301);
+    assert_eq!(getline(&mut line, input.stream), 301);
     assert_eq!(&line.as_bytes()[..300], &long[..]);
     assert_eq!(line.capacity(), 511);
 
-    assert_eq!(getline_(&mut line, input.stream), 4);
+    assert_eq!(getline(&mut line, input.stream), 4);
     assert_eq!(line.as_bytes(), b"last");
-    assert_eq!(getline_(&mut line, input.stream), -1);
+    assert_eq!(getline(&mut line, input.stream), -1);
 }
 
 #[test]
 fn getdelim_counts_bytes_past_an_embedded_nul() {
     let input = Input::new("getdelim", b"a\0b|rest");
     let mut field = ZString::with_capacity(2);
-    assert_eq!(getdelim_(&mut field, b'|' as libc::c_int, input.stream), 4);
+    assert_eq!(getdelim(&mut field, b'|' as libc::c_int, input.stream), 4);
     assert_eq!(&field.as_buffer()[..5], b"a\0b|\0");
     assert_eq!(field.as_bytes(), b"a");
-    assert_eq!(getdelim_(&mut field, b'|' as libc::c_int, input.stream), 4);
+    assert_eq!(getdelim(&mut field, b'|' as libc::c_int, input.stream), 4);
     assert_eq!(field.as_bytes(), b"rest");
 }
 
@@ -124,22 +124,22 @@ fn snprintf_into_a_zstr_uses_every_writable_byte() {
 #[test]
 fn tmpnam_and_ctermid_fill_or_refuse_a_destination() {
     let mut name = ZString::with_capacity(L_tmpnam - 1);
-    let len = tmpnam_((&mut name).into()).unwrap();
+    let len = tmpnam((&mut name).into()).unwrap();
     assert_eq!(len, name.len());
     assert!(name.as_bytes().starts_with(b"/tmp/xj"));
 
     let mut terminal = ZString::with_capacity(L_ctermid - 1);
-    assert_eq!(ctermid_((&mut terminal).into()), Some(8));
+    assert_eq!(ctermid((&mut terminal).into()), Some(8));
     assert_eq!(terminal.as_bytes(), b"/dev/tty");
 
     let mut small = *b"xxxx";
     errno::set(0);
-    assert_eq!(ctermid_((&mut small).into()), None);
+    assert_eq!(ctermid((&mut small).into()), None);
     assert_eq!(errno::get(), libc::ERANGE);
     assert_eq!(&small, b"xxxx");
 
     // SAFETY: no other caller in this test binary uses the static buffer.
-    assert!(!unsafe { tmpnam(std::ptr::null_mut()) }.is_null());
+    assert!(!unsafe { tmpnam_raw(std::ptr::null_mut()) }.is_null());
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn read_only_strings_pass_as_c_str_views() {
     assert!(!stream.is_null());
     let text = ZStr::from_bytes_with_nul(b"hi\0hidden\0").unwrap();
     assert!(fputs(text.as_c_str(), stream) >= 0);
-    assert_eq!(fwrite_(text.as_bytes(), stream), 2);
+    assert_eq!(fwrite(text.as_bytes(), stream), 2);
     assert_eq!(fclose(stream), 0);
     assert_eq!(std::fs::read(&path).unwrap(), b"hihi");
     assert_eq!(remove(name.as_c_str()), 0);

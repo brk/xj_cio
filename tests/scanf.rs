@@ -15,7 +15,7 @@ fn stream_with(contents: &[u8]) -> FILE_ptr {
     assert!(!stream.is_null());
     // SAFETY: the source is a live byte slice of the given length.
     assert_eq!(
-        unsafe { fwrite(contents.as_ptr(), 1, contents.len(), stream) },
+        unsafe { fwrite_raw(contents.as_ptr(), 1, contents.len(), stream) },
         contents.len()
     );
     rewind(stream);

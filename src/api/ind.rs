@@ -1,4 +1,4 @@
-//! Indicators: `feof`, `ferror`, `clearerr`, `perror`.
+//! Indicators: `feof`, `ferror`, `clearerr`, `perror_raw`.
 
 use std::ffi::CStr;
 
@@ -22,10 +22,10 @@ pub fn clearerr(t: FILE_ptr) {
     });
 }
 
-/// Safe sibling of `perror`. Writes `<prefix>: <strerror(errno)>\n`
+/// Safe sibling of `perror_raw`. Writes `<prefix>: <strerror(errno)>\n`
 /// (or just `<strerror(errno)>\n` if `prefix` is `None`) to stderr.
 /// Use `None::<&str>` when omitting the prefix.
-pub fn perror_<B: crate::ByteView + ?Sized>(prefix: Option<&B>) {
+pub fn perror<B: crate::ByteView + ?Sized>(prefix: Option<&B>) {
     let saved = errno::get();
     let prefix = prefix.map(|p| xj_bytes::c_bytes(p.view_bytes()));
     let stderr = crate::api::stdio_::stderr();
@@ -54,14 +54,14 @@ pub fn perror_<B: crate::ByteView + ?Sized>(prefix: Option<&B>) {
     });
 }
 
-/// `perror(prefix)` writes `<prefix>: <strerror(errno)>\n` to stderr.
+/// `perror_raw(prefix)` writes `<prefix>: <strerror(errno)>\n` to stderr.
 ///
 /// # Safety
 ///
 /// `prefix` must be null or point to a NUL-terminated string that is
 /// valid for reads up to and including its NUL and is not modified
 /// during the call.
-pub unsafe fn perror(prefix: *const u8) {
+pub unsafe fn perror_raw(prefix: *const u8) {
     let p = if prefix.is_null() {
         None
     } else {
@@ -69,5 +69,5 @@ pub unsafe fn perror(prefix: *const u8) {
         // unmodified NUL-terminated string.
         Some(unsafe { CStr::from_ptr(prefix.cast()) })
     };
-    perror_(p);
+    perror(p);
 }

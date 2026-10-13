@@ -1,4 +1,4 @@
-//! Line-oriented I/O: `fgets`, `fputs`, `puts`, `getline`, `getdelim`.
+//! Line-oriented I/O: `fgets_raw`, `fputs`, `puts`, `getline_raw`, `getdelim_raw`.
 
 use crate::ByteView;
 use xj_bytes::c_bytes;
@@ -11,7 +11,7 @@ use crate::{EOF, FILE_ptr};
 
 use super::ops;
 
-/// Safe sibling of `fgets`. `dst.c_size()` plays the role of C's `n`:
+/// Safe sibling of `fgets_raw`. `dst.c_size()` plays the role of C's `n`:
 /// reads up to `n - 1` bytes, stopping at `\n` (which is included) or
 /// EOF, and terminates them. Returns the number of payload bytes
 /// (excluding the NUL) on success, `None` on EOF-before-any-bytes,
@@ -21,7 +21,7 @@ use super::ops;
 /// `ZString` as `z.into()`, or a `ZStr` with a separate C size as
 /// `z.limit(n)`. Never pass `z.as_buffer_mut()`: as a plain slice it
 /// reads one byte less per call than C would.
-pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
+pub fn fgets(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
     if dst.c_size() == 0 {
         return None;
     }
@@ -37,7 +37,7 @@ pub fn fgets_(mut dst: CStrDest<'_>, t: FILE_ptr) -> Option<usize> {
     Some(written)
 }
 
-/// Shared body of `fgets_` and `fgets`: reads up to `max` (> 0) bytes,
+/// Shared body of `fgets` and `fgets_raw`: reads up to `max` (> 0) bytes,
 /// stopping after `\n` or at EOF, and hands each to `put` with its
 /// index (`0..max`). Returns the count, or `None` on
 /// EOF-before-any-bytes or error.
@@ -70,7 +70,7 @@ fn fgets_core(max: usize, t: FILE_ptr, mut put: impl FnMut(usize, u8)) -> Option
     got.flatten()
 }
 
-/// `fgets(buf, n, fp)`. Reads up to `n-1` bytes; stops at `\n`
+/// `fgets_raw(buf, n, fp)`. Reads up to `n-1` bytes; stops at `\n`
 /// (which is included) or EOF. Always NUL-terminates if `n >= 1`.
 /// Returns `buf` on success, `NULL` on EOF-before-any-bytes or error.
 ///
@@ -82,7 +82,7 @@ fn fgets_core(max: usize, t: FILE_ptr, mut put: impl FnMut(usize, u8)) -> Option
 /// the call.
 ///
 /// As in C, only the bytes read and the terminator are written.
-pub unsafe fn fgets(buf: *mut u8, n: libc::c_int, t: FILE_ptr) -> *mut u8 {
+pub unsafe fn fgets_raw(buf: *mut u8, n: libc::c_int, t: FILE_ptr) -> *mut u8 {
     if n <= 0 || buf.is_null() {
         return std::ptr::null_mut();
     }
@@ -138,11 +138,11 @@ pub fn puts<B: ByteView + ?Sized>(s: &B) -> core::ffi::c_int {
     r.unwrap_or(EOF)
 }
 
-/// Common implementation for `getline` and `getdelim`.
+/// Common implementation for `getline_raw` and `getdelim_raw`.
 ///
 /// # Safety
 ///
-/// See [`getdelim`].
+/// See [`getdelim_raw`].
 unsafe fn getdelim_impl(
     line_ptr: *mut *mut u8,
     n_ptr: *mut libc::size_t,
@@ -259,14 +259,14 @@ unsafe fn getdelim_impl(
     r.unwrap_or(-1)
 }
 
-/// Safe sibling of `getline`, reading into an owned [`ZString`].
-/// See [`getdelim_`].
-pub fn getline_(line: &mut ZString, t: FILE_ptr) -> libc::ssize_t {
-    getdelim_(line, b'\n' as libc::c_int, t)
+/// Safe sibling of `getline_raw`, reading into an owned [`ZString`].
+/// See [`getdelim`].
+pub fn getline(line: &mut ZString, t: FILE_ptr) -> libc::ssize_t {
+    getdelim(line, b'\n' as libc::c_int, t)
 }
 
-/// Safe sibling of `getdelim`. Reads through the next `delim` byte
-/// (which is included) or EOF into `line`, growing it as `getdelim`
+/// Safe sibling of `getdelim_raw`. Reads through the next `delim` byte
+/// (which is included) or EOF into `line`, growing it as `getdelim_raw`
 /// reallocates `*lineptr`, and terminates the result. Returns the
 /// number of bytes read, or -1 on EOF-before-any-bytes or error.
 ///
@@ -274,7 +274,7 @@ pub fn getline_(line: &mut ZString, t: FILE_ptr) -> libc::ssize_t {
 /// NUL bytes is stored whole, but `line.len()` stops at its first NUL.
 /// Bytes after the new terminator are left unchanged. `line`'s
 /// contents are unspecified after an error, as in C.
-pub fn getdelim_(line: &mut ZString, delim: libc::c_int, t: FILE_ptr) -> libc::ssize_t {
+pub fn getdelim(line: &mut ZString, delim: libc::c_int, t: FILE_ptr) -> libc::ssize_t {
     let r = ops::with_token(t, |s| {
         if !s.mode.readable() {
             errno::set(libc::EBADF);
@@ -309,12 +309,12 @@ pub fn getdelim_(line: &mut ZString, delim: libc::c_int, t: FILE_ptr) -> libc::s
     r.unwrap_or(-1)
 }
 
-/// `getline(lineptr, n, fp)`: `getdelim` with `delim = '\n'`.
+/// `getline_raw(lineptr, n, fp)`: `getdelim_raw` with `delim = '\n'`.
 ///
 /// # Safety
 ///
-/// See [`getdelim`].
-pub unsafe fn getline(
+/// See [`getdelim_raw`].
+pub unsafe fn getline_raw(
     line_ptr: *mut *mut u8,
     n_ptr: *mut libc::size_t,
     t: FILE_ptr,
@@ -323,7 +323,7 @@ pub unsafe fn getline(
     unsafe { getdelim_impl(line_ptr, n_ptr, b'\n' as i32, t) }
 }
 
-/// `getdelim(lineptr, n, delim, fp)`. Reads through the next `delim`
+/// `getdelim_raw(lineptr, n, delim, fp)`. Reads through the next `delim`
 /// byte (or EOF) into `*lineptr`, growing it with `realloc` and
 /// updating `*n`. Returns the number of bytes read, or -1.
 ///
@@ -339,7 +339,7 @@ pub unsafe fn getline(
 ///
 /// On return, `*line_ptr` may have been reallocated (the old pointer
 /// is then dangling) and the caller owns it.
-pub unsafe fn getdelim(
+pub unsafe fn getdelim_raw(
     line_ptr: *mut *mut u8,
     n_ptr: *mut libc::size_t,
     delim: libc::c_int,

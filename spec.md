@@ -83,8 +83,8 @@ pub type FILE_ptr = *const _File;     // null means "no file" (replaces NULL)
 
 pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> FILE_ptr;
 pub unsafe fn fopen_raw(path: *const u8, mode: &str) -> FILE_ptr;
-pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
-pub fn fread_(dst: &mut [u8], f: FILE_ptr) -> usize;
+pub unsafe fn fread_raw(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
+pub fn fread(dst: &mut [u8], f: FILE_ptr) -> usize;
 pub fn fread_items(dst: &mut [u8], size: usize, count: usize, f: FILE_ptr) -> usize;
 pub fn fwrite_items<B: ByteView + ?Sized>(src: &B, size: usize, count: usize, f: FILE_ptr) -> usize;
 pub fn ferror(f: FILE_ptr) -> c_int;
@@ -93,15 +93,15 @@ pub fn ferror(f: FILE_ptr) -> c_int;
 
 The handle-based signatures are chosen over Rust-native (`&mut Stream`) ones to keep mechanical translation close to the original source: every C `FILE *f` becomes a Rust `f: FILE_ptr`, and every `f == NULL` test becomes `f.is_null()`.
 
-C `char *` and `const char *` parameters and returns become `*mut u8` and `*const u8`, never `libc::c_char`. Examples are the buffers of `fgets`, `snprintf`, `tmpnam` and `setvbuf`, `*lineptr` in `getline`, the strings of `perror` and `freopen`, and `OutArg::Str`. Bytes are what the library reads and writes, and `u8` matches the safe siblings' `&[u8]` and `CStrDest` without casts. It also avoids `c_char`'s platform-dependent signedness. A pointer obtained from `CStr::as_ptr` or `CString::as_ptr` (which return `*const c_char`) is passed as `p.cast()`.
+C `char *` and `const char *` parameters and returns become `*mut u8` and `*const u8`, never `libc::c_char`. Examples are the buffers of `fgets_raw`, `snprintf`, `tmpnam_raw` and `setvbuf`, `*lineptr` in `getline_raw`, the strings of `perror_raw` and `freopen_raw`, and `OutArg::Str`. Bytes are what the library reads and writes, and `u8` matches the safe siblings' `&[u8]` and `CStrDest` without casts. It also avoids `c_char`'s platform-dependent signedness. A pointer obtained from `CStr::as_ptr` or `CString::as_ptr` (which return `*const c_char`) is passed as `p.cast()`.
 
-Where a POSIX signature takes a raw buffer pointer, the raw version is an `unsafe fn` whose `# Safety` section states the caller's contract (§7.1), and a safe sibling with a trailing underscore takes Rust types instead: `fread_`, `fwrite_`, `fmemopen_`, `perror_`, `freopen_`, and the string functions of §8 (`fgets_`, `tmpnam_`, `ctermid_`, `getline_`, `getdelim_`). The two always share one implementation. Usually the raw version wraps its pointer and delegates to the sibling. Where the raw buffer may be uninitialized, both instead call a common core that writes only the bytes C writes (§7.1).
+Where a POSIX signature takes a raw buffer pointer, the raw version is an `unsafe fn` whose `# Safety` section states the caller's contract (§7.1), and the safe sibling takes Rust types under the base name: `fread`, `fwrite`, `fmemopen`, `perror`, `freopen`, and the string functions of §8 (`fgets`, `tmpnam`, `ctermid`, `getline`, `getdelim`). The two always share one implementation. Usually the raw version wraps its pointer and delegates to the sibling. Where the raw buffer may be uninitialized, both instead call a common core that writes only the bytes C writes (§7.1).
 
 `fread_items` and `fwrite_items` retain the C size/count arguments while accepting bounded Rust buffers. They operate on the first `size * count` bytes and return complete item counts. A zero size or count returns zero without accessing the buffer or stream; multiplication overflow sets `errno` to `EINVAL` and returns zero. Requests exceeding the available buffer panic rather than silently shortening the request. `fwrite_items` includes stored NULs and hidden bytes in its requested range.
 
 The `c_abi` module supplies shared `extern "C"` entry points for fixed-signature stdio functions. Translated direct calls use ordinary APIs when their arguments match, including borrowed C-string views for literals and guided storage. Raw C strings and `void *` buffers can use the shared argument adapters. C function references use `c_abi` so their calling convention matches the translated function-pointer type; Tenjin does not emit a local forwarding function for every stdio declaration. `fgetpos` and `fsetpos` accept a pointer type parameter for translated `fpos_t` records, under the ordinary layout and storage safety requirements. The wrappers use `u8` for C character storage and `FILE_ptr` for stream handles, and do not export libc symbol names. Variadic formatted I/O remains on the macros and plan APIs.
 
-`fopen_raw`, `fdopen_raw`, `freopen_raw`, `popen_raw`, and `fmemopen_raw` accept a Rust `&str` mode alongside the raw path, descriptor, command, or buffer. Modes need no stored NUL; they retain the ordinary API's first-NUL semantics. These are unsafe Rust functions sharing the ordinary implementations and safety contracts. Synsub uses them for direct calls with literal modes when other arguments still require raw access; borrowed paths and commands can use `fopen` and `popen` directly.
+`fopen_raw`, `fdopen_raw`, and `popen_raw` accept a Rust `&str` mode. `freopen_raw` and `fmemopen_raw` accept any `ByteView` mode alongside their raw path or buffer. Modes need no stored NUL; they retain the ordinary API's first-NUL semantics. These are unsafe Rust functions sharing the ordinary implementations and safety contracts. Synsub uses them for direct calls with literal modes when other arguments still require raw access; borrowed paths and commands can use `fopen` and `popen` directly.
 
 The choice of `*const _File` is still compatible with the safety story (§7): although the handle is pointer-typed, it is not a real pointer into our data structures. The `_File` type is just an opaque placeholder, and the pointer bits are synthesized from slotmap keys rather than borrowed from a live `FILE` allocation. See §4.3.
 
@@ -431,14 +431,14 @@ Every `unsafe fn` has a `# Safety` section stating its preconditions, and every 
 2. **Buffer pointers.** `fread`, `fwrite`, `fgets`, `snprintf`, `sprintf`, `fgetpos`, `fsetpos`, and `tmpnam`/`ctermid` with a non-null buffer require the buffer to be valid for the length C implies, and not accessed through any other pointer or reference during the call.
    - **Destinations may be uninitialized.** That covers `fread`, `fgets`, `snprintf`, `sprintf`, `tmpnam` and `ctermid`. Each one writes exactly the bytes C specifies and leaves the rest untouched. C gives no licence to write elsewhere: for example, `fread` may only make a *partial* final element indeterminate (C11 §7.21.8.1). So these functions never zero-fill a buffer just so they can borrow it as `&mut [u8]`:
      - **`fread`** borrows the buffer as `&mut [MaybeUninit<u8>]` and copies in only the bytes read. Large requests that would read directly into a caller's initialized slice instead go through a scratch buffer of at most 64 KiB per read. That scratch request is never larger than the remaining request, so unbuffered streams never consume extra input.
-     - **`fgets`** shares its read loop with `fgets_` and writes each byte, and the NUL, through the raw pointer.
+     - **`fgets`** shares its read loop with `fgets` and writes each byte, and the NUL, through the raw pointer.
      - **`tmpnam` and `ctermid`** generate the name in a local array and copy out only the name and its NUL.
      - **`snprintf!` and `sprintf!`** copy output bytes and their terminator directly through the raw pointer without constructing a destination slice.
    - **Sources must be initialized.** `fwrite` and `fsetpos` read the caller's bytes. `fsetpos` expects an `fpos_t` filled in by `fgetpos`, which stores the offset in its first 8 bytes. A compile-time assertion checks that `fpos_t` is at least that large.
 3. **C-string pointers.** `perror` and `freopen` accept a null pointer or a valid NUL-terminated string.
 4. **`getline` / `getdelim`.** `lineptr` and `n` must be valid for reads and writes. `*lineptr` must be null or a live `malloc`-family allocation of at least `*n` bytes. As POSIX specifies, `*n` is ignored when `*lineptr` is null.
 5. **Static result buffers.** `tmpnam(NULL)` and `ctermid(NULL)` write a shared static buffer, as in C. Concurrent calls, or overlapping use of a previously returned pointer, are a data race. That is the caller's contract.
-6. **`fmemopen` over a caller's buffer.** The buffer must stay valid for reads and writes of `size` initialized bytes for as long as the stream may touch it. That means until `fclose`, `pclose` or `freopen` returns, or until program exit and the `atexit` flush if the stream is never closed. One case extends this further. If the closing thread holds a `StreamGuard` on the stream, `fclose` defers its flush. The buffer must then stay valid until that guard drops and any operations other threads had already started have returned. Between operations the caller may access the buffer, as C programs do after `fflush`, but not during one. This contract is exactly the invariant on `MemStorage::User` that lets the safe `MemBacking::slice`/`slice_mut` build slices over the buffer. The owned-buffer path (`fmemopen_`, or `fmemopen` with a null buffer) needs no contract.
+6. **`fmemopen` over a caller's buffer.** The buffer must stay valid for reads and writes of `size` initialized bytes for as long as the stream may touch it. That means until `fclose`, `pclose` or `freopen` returns, or until program exit and the `atexit` flush if the stream is never closed. One case extends this further. If the closing thread holds a `StreamGuard` on the stream, `fclose` defers its flush. The buffer must then stay valid until that guard drops and any operations other threads had already started have returned. Between operations the caller may access the buffer, as C programs do after `fflush`, but not during one. This contract is exactly the invariant on `MemStorage::User` that lets the safe `MemBacking::slice`/`slice_mut` build slices over the buffer. The owned-buffer path (`fmemopen`, or `fmemopen_raw` with a null buffer) needs no contract.
 7. **Format arguments.** Printing macros adapt arguments by Rust type into `Arg::I`, `U`, `F`, `Bytes`, or unclassified `Raw` carriers. The common renderer interprets each carrier according to its conversion. Raw `%s` reads and `%n` stores require an unsafe caller; the `_safe` macros reject raw pointers and count stores. Pre-parsed printing APIs take `&[Arg]`, including the translator's thin `va_list` adapter. Safe scanning takes `&mut [&mut dyn ScanTarget]`, shared with `xj_scanf`. The unsafe `fscanf_raw`, `scanf_raw` and `sscanf_raw` take `&mut [OutArg]` under its pointer-validity contract, made at each call; the unsafe `va_list` entry points pull one pointer of exactly the type each directive requires. Moving or sharing raw carriers does not access their pointees; consuming them requires the corresponding unsafe API.
 
 **Internal.** These are not visible to callers.
@@ -453,7 +453,7 @@ Every `unsafe fn` has a `# Safety` section stating its preconditions, and every 
     - the `errno` mirror through `__errno_location`;
     - `getpid`;
     - the `popen` pipe fd hand-off into `File`;
-    - `strerror_r` into a local buffer for `perror_`, never `strerror`, whose static buffer another thread may overwrite.
+    - `strerror_r` into a local buffer for `perror`, never `strerror`, whose static buffer another thread may overwrite.
 11. **scanf destinations.** The `OutArg` and `va_list` adapters are private and created only inside the unsafe entry points; they write through raw pointers under those calls' contracts. Each destination is checked against its directive's class and width before the directive reads input.
 
 Notably absent from this list: anything to do with `FILE_ptr` itself. Handle encode/decode and slotmap lookup are entirely safe Rust (`ptr::without_provenance` and `.addr()`), and the translated code never has access to a real pointer into our state.
@@ -498,21 +498,21 @@ There is no parallel ZStr-specific copy of the API. Most functions need nothing 
 
 | What C does with the string | Functions | `xj_cio` parameter | Passing a `ZStr` |
 |---|---|---|---|
-| Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror_`, scanf formats | `&B` where `B: ByteView + ?Sized` | Pass `z` directly; the consumer stops at the first NUL or view end |
-| Reads bytes | `fwrite_`, `fwrite_items` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range. The item API limits the write to `size * count` bytes |
-| Writes bytes into a bounded region | `fread_`, `fread_items` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument. The item API limits the read to `size * count` bytes |
-| Writes a terminated string into a sized buffer | `fgets_`, `tmpnam_`, `ctermid_`, scanf `%s` and `%[` | `xj_bytes::CStrDest`, reexported by `xj_cio` and `xj_zstr` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
-| Grows a string | `getline_`, `getdelim_` | `&mut ZString` | The `ZString` itself |
+| Reads it | `fopen`/`freopen` path and mode, `popen`, `remove`, `rename`, `fputs`, `puts`, `perror`, scanf formats | `&B` where `B: ByteView + ?Sized` | Pass `z` directly; the consumer stops at the first NUL or view end |
+| Reads bytes | `fwrite`, `fwrite_items` | `&B` where `B: ByteView + ?Sized` | Pass `z` for its entire initialized backing storage, including the reserved final NUL; pass `z.as_bytes()` or a slice for a narrower range. The item API limits the write to `size * count` bytes |
+| Writes bytes into a bounded region | `fread`, `fread_items` | `&mut [u8]` | `as_buffer_mut()` or a sub-slice matching C's length argument. The item API limits the read to `size * count` bytes |
+| Writes a terminated string into a sized buffer | `fgets`, `tmpnam`, `ctermid`, scanf `%s` and `%[` | `xj_bytes::CStrDest`, reexported by `xj_cio` and `xj_zstr` | `z.into()` for the whole buffer, `z.limit(n)` for C size `n` |
+| Grows a string | `getline`, `getdelim` | `&mut ZString` | The `ZString` itself |
 
-Read-only parameters share `xj_bytes::ByteView`, reexported by `xj_cio`. Ordinary strings (`"r"`), C strings (`c"r"`), byte slices, `ZStr`, and their owned forms can be passed directly. Unix `Path`, `PathBuf`, `OsStr`, and `OsString` also work for paths without requiring UTF-8. String consumers stop at the first NUL or view end; `fwrite_` writes the complete view. Optional generic inputs need a type when absent: use `None::<&str>` with `perror_` or `freopen_`.
+Read-only parameters share `xj_bytes::ByteView`, reexported by `xj_cio`. Ordinary strings (`"r"`), C strings (`c"r"`), byte slices, `ZStr`, and their owned forms can be passed directly. Unix `Path`, `PathBuf`, `OsStr`, and `OsString` also work for paths without requiring UTF-8. String consumers stop at the first NUL or view end; `fwrite` writes the complete view. Optional generic inputs need a type when absent: use `None::<&str>` with `perror` or `freopen`.
 
 | C | Rust |
 |---|---|
 | `fopen(path, "r")`, `path` a `ZStr` | `fopen(path, "r")` |
-| `fgets(buf, sizeof buf, f)`, `char buf[N]` | `fgets_((&mut buf).into(), f)` |
-| `fgets(out, n, f)`, `out` a `ZStr` | `fgets_(out.limit(n), f)` |
+| `fgets(buf, sizeof buf, f)`, `char buf[N]` | `fgets((&mut buf).into(), f)` |
+| `fgets(out, n, f)`, `out` a `ZStr` | `fgets(out.limit(n), f)` |
 | `snprintf(out, n, fmt, …)`, guided storage and safe arguments | `snprintf_safe!(out, n, fmt, …)` |
-| `getline(&line, &cap, f)` | `getline_(&mut line, f)`, `line: ZString`; read `cap` as `line.capacity() + 1` |
+| `getline(&line, &cap, f)` | `getline(&mut line, f)`, `line: ZString`; read `cap` as `line.capacity() + 1` |
 | `fscanf(f, "%15s %d", word, &n)`, `char word[16]` | `fscanf(f, c"%15s %d", &mut [&mut word, &mut n])`, or `fscanf_raw(f, c"%15s %d", &mut [OutArg::Buf((&mut word).into()), OutArg::Int(&mut n)])` |
 
 ### 8.2 `CStrDest`
@@ -525,16 +525,16 @@ C passes these functions a buffer and a size that includes the terminator. The s
 - **`ZStr::limit(n)`** gives C size `n` for any `n` up to the backing length, and panics beyond it, as slicing does.
 - **`CStrBuffer::cstr_dest().limit(n)`** selects a size for any supported buffer, including a plain byte slice. A smaller boundary need not initially contain a NUL. Zero permits no writes; bytes beyond the limit remain untouched.
 
-Passing `z.as_buffer_mut()` as a plain slice is safe but wrong. The slice has N − 1 bytes and spends one on the NUL, so `fgets_` would read at most N − 2 bytes where C reads N − 1, and a line of exactly N − 1 bytes would arrive in two pieces.
+Passing `z.as_buffer_mut()` as a plain slice is safe but wrong. The slice has N − 1 bytes and spends one on the NUL, so `fgets` would read at most N − 2 bytes where C reads N − 1, and a line of exactly N − 1 bytes would arrive in two pieces.
 
 `CStrDest` and `CStrBuffer` are defined in `xj_bytes` and reexported by `xj_cio`, `xj_cfmt`, and `xj_zstr`. Destination support does not require `xj_zstr/cfmt`; that feature supplies formatting argument adapters. A value such as `out.limit(n)` can serve both printing engines and the functions below. Direct `Vec<u8>` formatting destinations replace their contents and grow as needed, without storing a NUL. Use `output.as_mut_slice()` to explicitly select bounded C buffer behavior.
 
 Semantics:
 
-- **`fgets_(dst, f) -> Option<usize>`** behaves as `fgets(buf, dst.c_size(), f)`. It returns the number of bytes stored before the terminator. It returns `None` on EOF before any byte, on error, or when `c_size()` is zero, leaving `dst` unchanged on EOF.
+- **`fgets(dst, f) -> Option<usize>`** behaves as `fgets(buf, dst.c_size(), f)`. It returns the number of bytes stored before the terminator. It returns `None` on EOF before any byte, on error, or when `c_size()` is zero, leaving `dst` unchanged on EOF.
 - **`snprintf_safe!(dst, n, fmt, …)`** uses the common C renderer for both literal and runtime formats, applies truncation and termination, and returns the full output length. `sprintf_safe!` uses a bounded destination's extent. Direct vector destinations grow to hold the payload without a stored NUL; `snprintf_safe!` limits that payload to `n - 1` bytes, and `n == 0` leaves the vector unchanged. The `_unchecked` forms accept raw arguments under an unsafe caller contract.
-- **`tmpnam_(dst)` and `ctermid_(dst)` -> `Option<usize>`** write the whole name and return its length. If it does not fit, they fail with `ERANGE` and leave `dst` untouched, because a truncated path names a different file. `c_size() >= L_tmpnam` (respectively `L_ctermid`) always suffices; generated temporary names are at most `L_tmpnam - 1` bytes.
-- **The raw printing macros** (`snprintf!`, `sprintf!`) accept writable pointer destinations and require an unsafe caller. They copy only the output bytes and terminator, without constructing an oversized slice. The raw functions `fgets`, `tmpnam`, and `ctermid` retain their pointer contracts (§7.1): `fgets` shares its read loop with `fgets_`, while `tmpnam` and `ctermid` use a local array and copy out the name and NUL.
+- **`tmpnam(dst)` and `ctermid(dst)` -> `Option<usize>`** write the whole name and return its length. If it does not fit, they fail with `ERANGE` and leave `dst` untouched, because a truncated path names a different file. `c_size() >= L_tmpnam` (respectively `L_ctermid`) always suffices; generated temporary names are at most `L_tmpnam - 1` bytes.
+- **The raw printing macros** (`snprintf!`, `sprintf!`) accept writable pointer destinations and require an unsafe caller. They copy only the output bytes and terminator, without constructing an oversized slice. The raw functions `fgets_raw`, `tmpnam_raw`, and `ctermid_raw` retain their pointer contracts (§7.1): `fgets_raw` shares its read loop with `fgets`, while `tmpnam_raw` and `ctermid_raw` use a local array and copy out the name and NUL.
 
 ### 8.3 scanf: bounded string destinations
 
@@ -548,9 +548,9 @@ Where C would overflow the buffer, a bounded conversion fails instead:
 
 A destination whose class or width does not fit its directive stops the call before the directive reads input, with `EINVAL`, as does an invalid or unsupported format (checked before any input is read). Scanning observes a set EOF indicator without reading further, as C11 `fgetc` requires; whitespace and literal mismatches no longer clear it.
 
-### 8.4 `getline_` and `getdelim_`
+### 8.4 `getline` and `getdelim`
 
-`getdelim_(line: &mut ZString, delim, f) -> ssize_t` reads through the next `delim` byte (inclusive) or EOF, and returns the number of bytes read. It returns -1 on EOF before any byte, or on error. `getline_` is `getdelim_` with `'\n'`.
+`getdelim(line: &mut ZString, delim, f) -> ssize_t` reads through the next `delim` byte (inclusive) or EOF, and returns the number of bytes read. It returns -1 on EOF before any byte, or on error. `getline` is `getdelim` with `'\n'`.
 
 - **Growth.** `line` grows as C's `getdelim` reallocates `*lineptr`, through `ZString::grow_to`, to backing sizes 128, 256, 512, and so on. It never shrinks, so a reused `ZString` behaves like a reused `malloc` buffer.
 - **Embedded NULs.** As in C, the return value is the line's length. A line containing NUL bytes is stored whole, but `line.len()` stops at its first NUL.
@@ -566,16 +566,16 @@ Formatting is always available through the required `xj_cfmt` dependency, with `
 
 `tests/zstr.rs` covers:
 
-- `fgets_` reading the same number of bytes as C into a `ZString`, an array and a `limit(n)` view, for C sizes 0 and 1.
-- `getline_` growth across a 300-byte line, and `getdelim_` with an embedded NUL.
+- `fgets` reading the same number of bytes as C into a `ZString`, an array and a `limit(n)` view, for C sizes 0 and 1.
+- `getline` growth across a 300-byte line, and `getdelim` with an embedded NUL.
 - Guided truncation with `snprintf_safe!` and raw destination macros `snprintf!` and `sprintf!`.
-- `tmpnam_` and `ctermid_`, including the `ERANGE` case.
+- `tmpnam` and `ctermid`, including the `ERANGE` case.
 - scanf `Buf` conversions:
   - an exact fit;
   - `%s` overflow, with the unread remainder;
   - a width smaller than the destination;
   - `%c` into an array and into a `ZStr` too small for it.
-- `&CStr` and `&[u8]` views of a `ZStr` passed to `fopen`, `fputs` and `fwrite_`.
+- `&CStr` and `&[u8]` views of a `ZStr` passed to `fopen`, `fputs` and `fwrite`.
 
 `tests/cfmt.rs` checks that a `ZStr` argument to `cfprintf!` takes the byte path.
 

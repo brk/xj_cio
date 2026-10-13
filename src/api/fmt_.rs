@@ -171,7 +171,7 @@ pub unsafe fn printf_plan(plan: &xj_cfmt::cformat::Plan<'_>, args: &[Arg<'_>]) -
 /// Raw arguments must satisfy the common renderer's contracts. `buf` must
 /// be writable for `min(size, rendered_length + 1)` bytes. A zero size writes
 /// nothing and permits a null buffer.
-pub unsafe fn snprintf_plan(
+pub unsafe fn snprintf_plan_raw(
     buf: *mut u8,
     size: usize,
     plan: &xj_cfmt::cformat::Plan<'_>,
@@ -184,7 +184,7 @@ pub unsafe fn snprintf_plan(
 /// # Safety
 /// Raw arguments must satisfy the common renderer's contracts. `buf` must
 /// be writable for the complete rendered output and its NUL terminator.
-pub unsafe fn sprintf_plan(
+pub unsafe fn sprintf_plan_raw(
     buf: *mut u8,
     plan: &xj_cfmt::cformat::Plan<'_>,
     args: &[Arg<'_>],

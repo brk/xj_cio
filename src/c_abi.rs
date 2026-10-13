@@ -20,16 +20,16 @@ macro_rules! forward {
 }
 
 macro_rules! forward_unsafe {
-    ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {$(
-        #[doc = concat!("C ABI entry point for [`crate::", stringify!($name), "`].")]
+    ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $target:ident;)*) => {$(
+        #[doc = concat!("C ABI entry point for [`crate::", stringify!($target), "`].")]
         ///
         /// # Safety
         ///
-        #[doc = concat!("The caller must satisfy [`crate::", stringify!($name), "`]'s safety contract.")]
+        #[doc = concat!("The caller must satisfy [`crate::", stringify!($target), "`]'s safety contract.")]
         #[inline]
         pub unsafe extern "C" fn $name($($arg: $ty),*) -> $ret {
             // SAFETY: the caller supplies the ordinary API's requirements.
-            unsafe { crate::$name($($arg),*) }
+            unsafe { crate::$target($($arg),*) }
         }
     )*};
 }
@@ -64,23 +64,23 @@ forward! {
 }
 
 forward_unsafe! {
-    fn tmpnam(buf: *mut u8) -> *mut u8;
-    fn ctermid(buf: *mut u8) -> *mut u8;
-    fn fgets(buf: *mut u8, size: c_int, stream: FILE_ptr) -> *mut u8;
-    fn getline(line: *mut *mut u8, size: *mut libc::size_t, stream: FILE_ptr) -> libc::ssize_t;
-    fn getdelim(line: *mut *mut u8, size: *mut libc::size_t, delim: c_int, stream: FILE_ptr) -> libc::ssize_t;
-    fn perror(prefix: *const u8) -> ();
+    fn tmpnam(buf: *mut u8) -> *mut u8 => tmpnam_raw;
+    fn ctermid(buf: *mut u8) -> *mut u8 => ctermid_raw;
+    fn fgets(buf: *mut u8, size: c_int, stream: FILE_ptr) -> *mut u8 => fgets_raw;
+    fn getline(line: *mut *mut u8, size: *mut libc::size_t, stream: FILE_ptr) -> libc::ssize_t => getline_raw;
+    fn getdelim(line: *mut *mut u8, size: *mut libc::size_t, delim: c_int, stream: FILE_ptr) -> libc::ssize_t => getdelim_raw;
+    fn perror(prefix: *const u8) -> () => perror_raw;
 }
 
 macro_rules! strings {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $body:expr;)*) => {$(
-        #[doc = concat!("Raw C-string entry point for [`crate::", stringify!($name), "`].")]
+        #[doc = concat!("Raw C-string entry point for `", stringify!($name), "`.")]
         ///
         /// # Safety
         ///
         /// Each string passed to the ordinary API as `&CStr` must point to a
         /// readable NUL-terminated string that remains unchanged for the call.
-        #[doc = concat!("The other arguments must also satisfy [`crate::", stringify!($name), "`]'s contract.")]
+        /// Other pointer arguments must satisfy the corresponding raw API's contract.
         #[inline]
         pub unsafe extern "C" fn $name($($arg: $ty),*) -> $ret {
             // SAFETY: C strings and any other unsafe arguments are valid by
@@ -96,11 +96,11 @@ strings! {
     fn fdopen(fd: c_int, mode: *const u8) -> FILE_ptr =>
         crate::fdopen(fd, CStr::from_ptr(mode.cast()));
     fn freopen(path: *const u8, mode: *const u8, stream: FILE_ptr) -> FILE_ptr =>
-        crate::freopen(path, CStr::from_ptr(mode.cast()), stream);
+        crate::freopen_raw(path, CStr::from_ptr(mode.cast()), stream);
     fn popen(command: *const u8, mode: *const u8) -> FILE_ptr =>
         crate::popen(CStr::from_ptr(command.cast()), CStr::from_ptr(mode.cast()));
     fn fmemopen(buf: *mut c_void, size: libc::size_t, mode: *const u8) -> FILE_ptr =>
-        crate::fmemopen(buf, size, CStr::from_ptr(mode.cast()));
+        crate::fmemopen_raw(buf, size, CStr::from_ptr(mode.cast()));
     fn remove(path: *const u8) -> c_int =>
         crate::remove(CStr::from_ptr(path.cast()));
     fn rename(from: *const u8, to: *const u8) -> c_int =>
@@ -111,11 +111,11 @@ strings! {
         crate::puts(CStr::from_ptr(text.cast()));
 }
 
-/// C buffer entry point for [`crate::fread`].
+/// C buffer entry point for [`crate::fread_raw`].
 ///
 /// # Safety
 ///
-/// The byte storage at `buf` must satisfy [`crate::fread`]'s safety contract.
+/// The byte storage at `buf` must satisfy [`crate::fread_raw`]'s safety contract.
 #[inline]
 pub unsafe extern "C" fn fread(
     buf: *mut c_void,
@@ -125,14 +125,14 @@ pub unsafe extern "C" fn fread(
 ) -> libc::size_t {
     // SAFETY: casting changes only the pointee type; the caller provides the
     // byte storage required by fread.
-    unsafe { crate::fread(buf.cast(), size, count, stream) }
+    unsafe { crate::fread_raw(buf.cast(), size, count, stream) }
 }
 
-/// C buffer entry point for [`crate::fwrite`].
+/// C buffer entry point for [`crate::fwrite_raw`].
 ///
 /// # Safety
 ///
-/// The byte storage at `buf` must satisfy [`crate::fwrite`]'s safety contract.
+/// The byte storage at `buf` must satisfy [`crate::fwrite_raw`]'s safety contract.
 #[inline]
 pub unsafe extern "C" fn fwrite(
     buf: *const c_void,
@@ -141,31 +141,31 @@ pub unsafe extern "C" fn fwrite(
     stream: FILE_ptr,
 ) -> libc::size_t {
     // SAFETY: the caller provides the byte storage required by fwrite.
-    unsafe { crate::fwrite(buf.cast(), size, count, stream) }
+    unsafe { crate::fwrite_raw(buf.cast(), size, count, stream) }
 }
 
-/// C ABI entry point for [`crate::fgetpos`]. The type parameter accommodates
+/// C ABI entry point for [`crate::fgetpos_raw`]. The type parameter accommodates
 /// translated C definitions of the opaque `fpos_t` record.
 ///
 /// # Safety
 ///
 /// `pos` must point to storage with `libc::fpos_t`'s layout, size, and alignment,
-/// and satisfy [`crate::fgetpos`]'s write and aliasing requirements.
+/// and satisfy [`crate::fgetpos_raw`]'s write and aliasing requirements.
 #[inline]
 pub unsafe extern "C" fn fgetpos<T>(stream: FILE_ptr, pos: *mut T) -> c_int {
     // SAFETY: the caller guarantees the original C fpos_t storage layout.
-    unsafe { crate::fgetpos(stream, pos.cast()) }
+    unsafe { crate::fgetpos_raw(stream, pos.cast()) }
 }
 
-/// C ABI entry point for [`crate::fsetpos`]. The type parameter accommodates
+/// C ABI entry point for [`crate::fsetpos_raw`]. The type parameter accommodates
 /// translated C definitions of the opaque `fpos_t` record.
 ///
 /// # Safety
 ///
 /// `pos` must point to a value with `libc::fpos_t`'s layout, size, and alignment,
-/// and satisfy [`crate::fsetpos`]'s read and aliasing requirements.
+/// and satisfy [`crate::fsetpos_raw`]'s read and aliasing requirements.
 #[inline]
 pub unsafe extern "C" fn fsetpos<T>(stream: FILE_ptr, pos: *const T) -> c_int {
     // SAFETY: the caller guarantees the original C fpos_t storage layout.
-    unsafe { crate::fsetpos(stream, pos.cast()) }
+    unsafe { crate::fsetpos_raw(stream, pos.cast()) }
 }

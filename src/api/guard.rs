@@ -13,7 +13,7 @@
 //! # Constraint
 //!
 //! While a `StreamGuard` is held, the same thread must not call the
-//! public C-style API (`fread`, `fputs`, `fseek`, ...) on the *same*
+//! public C-style API (`fread_raw`, `fputs`, `fseek`, ...) on the *same*
 //! stream. The reentrant mutex would admit such a call cheaply, but
 //! its `borrow_mut` on the inner `RefCell` would panic — this guard
 //! already holds an outstanding `RefMut`. Use the inherent methods

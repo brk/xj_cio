@@ -1,4 +1,4 @@
-//! Open / close / freopen / fdopen / tmpfile / remove / rename.
+//! Open / close / freopen_raw / fdopen / tmpfile / remove / rename.
 
 use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
@@ -132,12 +132,12 @@ pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
     }
 }
 
-/// Safe sibling of `freopen`. `path = None` corresponds to
-/// `freopen(NULL, mode, fp)` (mode-change on the existing handle,
+/// Safe sibling of `freopen_raw`. `path = None` corresponds to
+/// `freopen_raw(NULL, mode, fp)` (mode-change on the existing handle,
 /// which we don't support — returns a null handle with
 /// `errno = EINVAL`). When passing no path, write `None::<&str>` to
 /// specify the input type.
-pub fn freopen_<P: ByteView + ?Sized, M: ByteView + ?Sized>(
+pub fn freopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(
     path: Option<&P>,
     mode: &M,
     t: FILE_ptr,
@@ -168,7 +168,7 @@ pub fn freopen_<P: ByteView + ?Sized, M: ByteView + ?Sized>(
         s.last_op = crate::state::Direction::Either;
 
         let cstr = match path {
-            // POSIX freopen(NULL, mode, fp): change mode of the
+            // POSIX freopen_raw(NULL, mode, fp): change mode of the
             // existing handle. We don't preserve the underlying fd
             // here, so degrade gracefully.
             None => return Err(libc::EINVAL),
@@ -192,14 +192,18 @@ pub fn freopen_<P: ByteView + ?Sized, M: ByteView + ?Sized>(
     }
 }
 
-/// `freopen(path, mode, fp)`. See [`freopen_`].
+/// `freopen_raw(path, mode, fp)`. See [`freopen`].
 ///
 /// # Safety
 ///
 /// `path` must be null or point to a NUL-terminated string that is
 /// valid for reads up to and including its NUL and is not modified
 /// during the call.
-pub unsafe fn freopen<M: ByteView + ?Sized>(path: *const u8, mode: &M, t: FILE_ptr) -> FILE_ptr {
+pub unsafe fn freopen_raw<M: ByteView + ?Sized>(
+    path: *const u8,
+    mode: &M,
+    t: FILE_ptr,
+) -> FILE_ptr {
     let p = if path.is_null() {
         None
     } else {
@@ -207,19 +211,7 @@ pub unsafe fn freopen<M: ByteView + ?Sized>(path: *const u8, mode: &M, t: FILE_p
         // unmodified NUL-terminated string.
         Some(unsafe { CStr::from_ptr(path.cast()) })
     };
-    freopen_(p, mode, t)
-}
-
-/// Reopens a stream with a raw C path and a Rust mode string.
-/// The mode does not need a terminating NUL. See [`freopen_`].
-///
-/// # Safety
-///
-/// `path` must be null or point to a readable NUL-terminated string that
-/// remains unchanged for the duration of the call.
-pub unsafe fn freopen_raw(path: *const u8, mode: &str, t: FILE_ptr) -> FILE_ptr {
-    // SAFETY: the caller supplies freopen's raw path requirements.
-    unsafe { freopen(path, mode, t) }
+    freopen(p, mode, t)
 }
 
 /// `fdopen(fd, mode)`. Unlike C, the stream wraps a `dup` of `fd`, so
@@ -332,12 +324,12 @@ fn write_name(mut dst: CStrDest<'_>, name: &[u8]) -> Option<usize> {
     Some(dst.write_truncated(name))
 }
 
-/// Safe sibling of `tmpnam` for a caller-supplied buffer. Writes a
+/// Safe sibling of `tmpnam_raw` for a caller-supplied buffer. Writes a
 /// fresh temporary path into `dst` and returns its length. A
 /// destination with `c_size() >= L_tmpnam` always suffices; a smaller
 /// one fails with `ERANGE` and is left untouched, where C would
 /// overflow it.
-pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
+pub fn tmpnam(dst: CStrDest<'_>) -> Option<usize> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -350,7 +342,7 @@ pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
     write_name(dst, s.as_bytes())
 }
 
-/// `tmpnam(buf)`. Writes a fresh temporary path into `buf`, or into a
+/// `tmpnam_raw(buf)`. Writes a fresh temporary path into `buf`, or into a
 /// static buffer if `buf` is null, and returns the buffer used.
 ///
 /// # Safety
@@ -359,12 +351,12 @@ pub fn tmpnam_(dst: CStrDest<'_>) -> Option<usize> {
 ///   bytes (which may be uninitialized), not accessed through any other
 ///   pointer or reference during the call.
 /// - If `buf` is null, the call writes the shared static buffer, as in
-///   C. No other thread may call `tmpnam(NULL)` concurrently, and no
+///   C. No other thread may call `tmpnam_raw(NULL)` concurrently, and no
 ///   reference to that buffer from an earlier call may be live (and
 ///   no access through a pointer to it may overlap the call).
 ///
 /// As in C, only the name and its terminator are written.
-pub unsafe fn tmpnam(buf: *mut u8) -> *mut u8 {
+pub unsafe fn tmpnam_raw(buf: *mut u8) -> *mut u8 {
     // Static buffer when the user passes NULL.
     static mut STATIC_BUF: [u8; crate::L_tmpnam] = [0; crate::L_tmpnam];
 
@@ -374,7 +366,7 @@ pub unsafe fn tmpnam(buf: *mut u8) -> *mut u8 {
         buf
     };
     let mut name = [0u8; crate::L_tmpnam];
-    match tmpnam_((&mut name).into()) {
+    match tmpnam((&mut name).into()) {
         // SAFETY: `len < L_tmpnam`, so the copy stays within the
         // `L_tmpnam` bytes at `dst`: a caller's `buf`, valid for
         // unaliased writes per the contract, or `STATIC_BUF`, which is
@@ -419,15 +411,15 @@ pub fn rename<F: ByteView + ?Sized, T: ByteView + ?Sized>(from: &F, to: &T) -> c
     }
 }
 
-/// Safe sibling of `ctermid` for a caller-supplied buffer. Writes the
+/// Safe sibling of `ctermid_raw` for a caller-supplied buffer. Writes the
 /// controlling terminal's path into `dst` and returns its length. A
 /// destination with `c_size() >= L_ctermid` always suffices; a smaller
 /// one fails with `ERANGE` and is left untouched.
-pub fn ctermid_(dst: CStrDest<'_>) -> Option<usize> {
+pub fn ctermid(dst: CStrDest<'_>) -> Option<usize> {
     write_name(dst, b"/dev/tty")
 }
 
-/// `ctermid(buf)`. Writes the controlling terminal's path into `buf`,
+/// `ctermid_raw(buf)`. Writes the controlling terminal's path into `buf`,
 /// or into a static buffer if `buf` is null, and returns the buffer.
 ///
 /// # Safety
@@ -436,12 +428,12 @@ pub fn ctermid_(dst: CStrDest<'_>) -> Option<usize> {
 ///   bytes (which may be uninitialized), not accessed through any other
 ///   pointer or reference during the call.
 /// - If `buf` is null, the call writes the shared static buffer, as in
-///   C. No other thread may call `ctermid(NULL)` concurrently, and no
+///   C. No other thread may call `ctermid_raw(NULL)` concurrently, and no
 ///   reference to that buffer from an earlier call may be live (and
 ///   no access through a pointer to it may overlap the call).
 ///
 /// As in C, only the path and its terminator are written.
-pub unsafe fn ctermid(buf: *mut u8) -> *mut u8 {
+pub unsafe fn ctermid_raw(buf: *mut u8) -> *mut u8 {
     static mut CTERMID: [u8; crate::L_ctermid] = [0; crate::L_ctermid];
     let dst = if buf.is_null() {
         (&raw mut CTERMID).cast::<u8>()
@@ -449,8 +441,8 @@ pub unsafe fn ctermid(buf: *mut u8) -> *mut u8 {
         buf
     };
     let mut path = [0u8; crate::L_ctermid];
-    match ctermid_((&mut path).into()) {
-        // SAFETY: as in `tmpnam`, with `L_ctermid` and `CTERMID`.
+    match ctermid((&mut path).into()) {
+        // SAFETY: as in `tmpnam_raw`, with `L_ctermid` and `CTERMID`.
         Some(len) => unsafe {
             std::ptr::copy_nonoverlapping(path.as_ptr(), dst, len + 1);
             dst

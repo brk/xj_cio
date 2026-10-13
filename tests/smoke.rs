@@ -17,7 +17,7 @@ fn fopen_fwrite_fclose_fopen_fread_roundtrip() {
     assert!(!fp.is_null());
     let data = b"hello world";
     // SAFETY: the source is a live byte slice of the given length.
-    let n = unsafe { fwrite(data.as_ptr(), 1, data.len(), fp) };
+    let n = unsafe { fwrite_raw(data.as_ptr(), 1, data.len(), fp) };
     assert_eq!(n, data.len());
     assert_eq!(fclose(fp), 0);
 
@@ -25,7 +25,7 @@ fn fopen_fwrite_fclose_fopen_fread_roundtrip() {
     assert!(!fp.is_null());
     let mut buf = [0u8; 32];
     // SAFETY: the destination is a live local array of the given length.
-    let n = unsafe { fread(buf.as_mut_ptr(), 1, buf.len(), fp) };
+    let n = unsafe { fread_raw(buf.as_mut_ptr(), 1, buf.len(), fp) };
     assert_eq!(n, data.len());
     assert_eq!(&buf[..n], data);
     assert_eq!(fclose(fp), 0);
@@ -40,7 +40,7 @@ fn fgetc_ungetc_roundtrip() {
 
     let fp = fopen(&p, &cstr("wb"));
     // SAFETY: the source is a live byte slice of the given length.
-    unsafe { fwrite(b"ABC".as_ptr(), 1, 3, fp) };
+    unsafe { fwrite_raw(b"ABC".as_ptr(), 1, 3, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -130,7 +130,7 @@ fn fseek_ftell_roundtrip() {
 
     let fp = fopen(&p, &cstr("wb"));
     // SAFETY: the source is a live byte slice of the given length.
-    unsafe { fwrite(b"0123456789".as_ptr(), 1, 10, fp) };
+    unsafe { fwrite_raw(b"0123456789".as_ptr(), 1, 10, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -148,7 +148,7 @@ fn fseek_ftell_roundtrip() {
 fn fmemopen_write_roundtrip() {
     let mut buf = [b'#'; 16];
     // SAFETY: `buf` outlives the stream (closed below) and is untouched until then.
-    let fp = unsafe { fmemopen(buf.as_mut_ptr() as *mut _, buf.len(), &cstr("w")) };
+    let fp = unsafe { fmemopen_raw(buf.as_mut_ptr() as *mut _, buf.len(), &cstr("w")) };
     assert!(!fp.is_null());
     let cs = cstr("hi");
     fputs(&cs, fp);
@@ -168,7 +168,7 @@ fn stream_guard_bufread_on_regular_file() {
 
     let fp = fopen(&p, &cstr("wb"));
     // SAFETY: the source is a live byte slice of the given length.
-    unsafe { fwrite(b"line one\nline two\nline three\n".as_ptr(), 1, 29, fp) };
+    unsafe { fwrite_raw(b"line one\nline two\nline three\n".as_ptr(), 1, 29, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -219,7 +219,7 @@ fn stream_guard_pushback_appears_in_fill_buf() {
 
     let fp = fopen(&p, &cstr("wb"));
     // SAFETY: the source is a live byte slice of the given length.
-    unsafe { fwrite(b"world".as_ptr(), 1, 5, fp) };
+    unsafe { fwrite_raw(b"world".as_ptr(), 1, 5, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -276,7 +276,7 @@ fn fclose_while_holding_stream_guard_does_not_panic() {
     assert!(!fp2.is_null());
     let mut buf = [0u8; 16];
     // SAFETY: the destination is a live local array of the given length.
-    let n = unsafe { fread(buf.as_mut_ptr(), 1, buf.len(), fp2) };
+    let n = unsafe { fread_raw(buf.as_mut_ptr(), 1, buf.len(), fp2) };
     assert_eq!(&buf[..n], b"hello");
     fclose(fp2);
     let _ = std::fs::remove_file(&path);
@@ -309,7 +309,7 @@ fn stream_guard_eof_indicator_after_drain() {
     let p = cstr(path.to_str().unwrap());
     let fp = fopen(&p, &cstr("wb"));
     // SAFETY: the source is a live byte slice of the given length.
-    unsafe { fwrite(b"ab".as_ptr(), 1, 2, fp) };
+    unsafe { fwrite_raw(b"ab".as_ptr(), 1, 2, fp) };
     fclose(fp);
 
     let fp = fopen(&p, &cstr("rb"));
@@ -341,7 +341,7 @@ fn fread_short_read_leaves_unread_elements_untouched() {
     let (fp, path) = read_fixture("xj_cio_fread_short.bin", b"abcdef");
     let mut buf = [b'#'; 10];
     // SAFETY: the destination is a live local array of the given length.
-    let n = unsafe { fread(buf.as_mut_ptr(), 2, 5, fp) };
+    let n = unsafe { fread_raw(buf.as_mut_ptr(), 2, 5, fp) };
     assert_eq!(n, 3);
     assert_eq!(&buf, b"abcdef####");
     fclose(fp);
@@ -361,7 +361,7 @@ fn fread_into_uninitialized_buffer() {
         let mut buf: Vec<MaybeUninit<u8>> = Vec::with_capacity(data.len() + 5);
         // SAFETY: the spare capacity is valid for writes of its length;
         // `fread` accepts uninitialized memory.
-        let n = unsafe { fread(buf.as_mut_ptr().cast(), 1, data.len() + 5, fp) };
+        let n = unsafe { fread_raw(buf.as_mut_ptr().cast(), 1, data.len() + 5, fp) };
         assert_eq!(n, data.len());
         // SAFETY: `fread` initialized the first `n` bytes.
         unsafe { buf.set_len(n) };
@@ -379,7 +379,7 @@ fn fgets_leaves_bytes_after_the_terminator_untouched() {
     let (fp, path) = read_fixture("xj_cio_fgets_tail.txt", b"ab\ncd");
     let mut buf = [b'#'; 8];
     // SAFETY: the destination is a live local array of length `n`.
-    let r = unsafe { fgets(buf.as_mut_ptr(), buf.len() as libc::c_int, fp) };
+    let r = unsafe { fgets_raw(buf.as_mut_ptr(), buf.len() as libc::c_int, fp) };
     assert_eq!(r, buf.as_mut_ptr());
     assert_eq!(buf, *b"ab\n\0####");
     fclose(fp);
@@ -390,7 +390,7 @@ fn fgets_leaves_bytes_after_the_terminator_untouched() {
 fn tmpnam_leaves_bytes_after_the_name_untouched() {
     let mut buf = [b'#'; L_tmpnam];
     // SAFETY: the destination is a live local array of `L_tmpnam` bytes.
-    let r = unsafe { tmpnam(buf.as_mut_ptr()) };
+    let r = unsafe { tmpnam_raw(buf.as_mut_ptr()) };
     assert_eq!(r, buf.as_mut_ptr());
     let len = buf.iter().position(|&b| b == 0).unwrap();
     assert!(buf[len + 1..].iter().all(|&b| b == b'#'));

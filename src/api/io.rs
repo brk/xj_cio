@@ -1,4 +1,4 @@
-//! Bulk and char I/O: `fread`, `fwrite`, `fgetc`, `fputc`, `ungetc`,
+//! Bulk and char I/O: `fread_raw`, `fwrite_raw`, `fgetc`, `fputc`, `ungetc`,
 //! `getc`, `putc`, `getchar`, `putchar`.
 
 use std::mem::MaybeUninit;
@@ -9,9 +9,9 @@ use crate::{EOF, FILE_ptr};
 
 use super::ops;
 
-/// Safe sibling of `fread`. Reads up to `dst.len()` bytes into `dst`
+/// Safe sibling of `fread_raw`. Reads up to `dst.len()` bytes into `dst`
 /// and returns the number of bytes actually read. Sets `eof`/`err`.
-pub fn fread_(dst: &mut [u8], t: FILE_ptr) -> usize {
+pub fn fread(dst: &mut [u8], t: FILE_ptr) -> usize {
     fread_dest(dst, t)
 }
 
@@ -30,7 +30,7 @@ pub fn fread_items(dst: &mut [u8], size: usize, count: usize, t: FILE_ptr) -> us
     let Some(total) = item_bytes(size, count) else {
         return 0;
     };
-    fread_(&mut dst[..total], t) / size
+    fread(&mut dst[..total], t) / size
 }
 
 /// A nonzero byte count shared by the bounded and raw item APIs.
@@ -45,7 +45,7 @@ fn item_bytes(size: usize, count: usize) -> Option<usize> {
     })
 }
 
-/// Shared body of `fread_` and `fread`.
+/// Shared body of `fread` and `fread_raw`.
 fn fread_dest<D: ops::ReadDest + ?Sized>(dst: &mut D, t: FILE_ptr) -> usize {
     if dst.dest_len() == 0 {
         return 0;
@@ -64,7 +64,7 @@ fn fread_dest<D: ops::ReadDest + ?Sized>(dst: &mut D, t: FILE_ptr) -> usize {
     got.unwrap_or(0)
 }
 
-/// `fread(buf, size, n, fp)`. Returns the number of *complete items*
+/// `fread_raw(buf, size, n, fp)`. Returns the number of *complete items*
 /// actually read (i.e. `bytes_read / size`). Sets `eof`/`err`.
 ///
 /// # Safety
@@ -76,7 +76,7 @@ fn fread_dest<D: ops::ReadDest + ?Sized>(dst: &mut D, t: FILE_ptr) -> usize {
 ///
 /// As in C, only the bytes read are written; the rest of the buffer is
 /// left untouched.
-pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
+pub unsafe fn fread_raw(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
     let Some(total) = item_bytes(size, n) else {
         return 0;
     };
@@ -88,10 +88,10 @@ pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, t: FILE_ptr) -> usize {
     fread_dest(&mut ops::UninitDest::new(dst), t) / size
 }
 
-/// Safe sibling of `fwrite`. Writes `src` to the stream and returns
+/// Safe sibling of `fwrite_raw`. Writes `src` to the stream and returns
 /// the number of bytes actually written. Includes stored NULs and hidden
 /// bytes; use [`crate::fputs`] to write only the effective C string.
-pub fn fwrite_<B: crate::ByteView + ?Sized>(src: &B, t: FILE_ptr) -> usize {
+pub fn fwrite<B: crate::ByteView + ?Sized>(src: &B, t: FILE_ptr) -> usize {
     let src = src.view_bytes();
     if src.is_empty() {
         return 0;
@@ -131,10 +131,10 @@ pub fn fwrite_items<B: crate::ByteView + ?Sized>(
     let Some(total) = item_bytes(size, count) else {
         return 0;
     };
-    fwrite_(&src.view_bytes()[..total], t) / size
+    fwrite(&src.view_bytes()[..total], t) / size
 }
 
-/// `fwrite(buf, size, n, fp)`. Returns the number of complete items
+/// `fwrite_raw(buf, size, n, fp)`. Returns the number of complete items
 /// actually written.
 ///
 /// # Safety
@@ -142,14 +142,14 @@ pub fn fwrite_items<B: crate::ByteView + ?Sized>(
 /// If `size * n` is nonzero and does not overflow, `buf` must be valid
 /// for reads of `size * n` initialized bytes, which must not be
 /// written through any other pointer during the call.
-pub unsafe fn fwrite(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
+pub unsafe fn fwrite_raw(buf: *const u8, size: usize, n: usize, t: FILE_ptr) -> usize {
     let Some(total) = item_bytes(size, n) else {
         return 0;
     };
     // SAFETY: `total` is nonzero, so the caller guarantees `total`
     // readable, initialized bytes at `buf`, unmodified for this call.
     let src = unsafe { std::slice::from_raw_parts(buf, total) };
-    fwrite_(src, t) / size
+    fwrite(src, t) / size
 }
 
 pub fn fgetc(t: FILE_ptr) -> core::ffi::c_int {
