@@ -77,6 +77,18 @@ pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> 
     slots::insert(Arc::new(FILE::new(state)))
 }
 
+/// Opens a raw C path with a Rust mode string, such as `"r"` or `"w+"`.
+/// The mode does not need a terminating NUL.
+///
+/// # Safety
+///
+/// `path` must point to a readable NUL-terminated string that remains
+/// unchanged for the duration of the call.
+pub unsafe fn fopen_raw(path: *const u8, mode: &str) -> FILE_ptr {
+    // SAFETY: the caller supplies a valid, unmodified C string.
+    fopen(unsafe { CStr::from_ptr(path.cast()) }, mode)
+}
+
 pub fn fclose(t: FILE_ptr) -> core::ffi::c_int {
     let arc = match slots::remove(t) {
         Some(a) => a,
@@ -198,6 +210,18 @@ pub unsafe fn freopen<M: ByteView + ?Sized>(path: *const u8, mode: &M, t: FILE_p
     freopen_(p, mode, t)
 }
 
+/// Reopens a stream with a raw C path and a Rust mode string.
+/// The mode does not need a terminating NUL. See [`freopen_`].
+///
+/// # Safety
+///
+/// `path` must be null or point to a readable NUL-terminated string that
+/// remains unchanged for the duration of the call.
+pub unsafe fn freopen_raw(path: *const u8, mode: &str, t: FILE_ptr) -> FILE_ptr {
+    // SAFETY: the caller supplies freopen's raw path requirements.
+    unsafe { freopen(path, mode, t) }
+}
+
 /// `fdopen(fd, mode)`. Unlike C, the stream wraps a `dup` of `fd`, so
 /// `fd` stays open (and owned by the caller) after `fclose`.
 ///
@@ -231,6 +255,19 @@ pub unsafe fn fdopen<M: ByteView + ?Sized>(fd: libc::c_int, mode: &M) -> FILE_pt
     let f = unsafe { File::from_raw_fd(dup) };
     let state = State::new(Handle::Regular(f), m, BufferPolicy::Full, BUFSIZ);
     slots::insert(Arc::new(FILE::new(state)))
+}
+
+/// Wraps a raw descriptor with a Rust mode string. The mode does not need
+/// a terminating NUL. Like [`fdopen`], duplicates rather than takes ownership
+/// of the descriptor.
+///
+/// # Safety
+///
+/// `fd` must be negative or an open descriptor that the caller may borrow
+/// throughout the call, without concurrent closure or reuse. See [`fdopen`].
+pub unsafe fn fdopen_raw(fd: libc::c_int, mode: &str) -> FILE_ptr {
+    // SAFETY: the caller supplies fdopen's descriptor requirements.
+    unsafe { fdopen(fd, mode) }
 }
 
 pub fn fileno(t: FILE_ptr) -> core::ffi::c_int {

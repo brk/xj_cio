@@ -82,6 +82,7 @@ pub enum _File {}
 pub type FILE_ptr = *const _File;     // null means "no file" (replaces NULL)
 
 pub fn fopen<P: ByteView + ?Sized, M: ByteView + ?Sized>(path: &P, mode: &M) -> FILE_ptr;
+pub unsafe fn fopen_raw(path: *const u8, mode: &str) -> FILE_ptr;
 pub unsafe fn fread(buf: *mut u8, size: usize, n: usize, f: FILE_ptr) -> usize;
 pub fn fread_(dst: &mut [u8], f: FILE_ptr) -> usize;
 pub fn fread_items(dst: &mut [u8], size: usize, count: usize, f: FILE_ptr) -> usize;
@@ -99,6 +100,8 @@ Where a POSIX signature takes a raw buffer pointer, the raw version is an `unsaf
 `fread_items` and `fwrite_items` retain the C size/count arguments while accepting bounded Rust buffers. They operate on the first `size * count` bytes and return complete item counts. A zero size or count returns zero without accessing the buffer or stream; multiplication overflow sets `errno` to `EINVAL` and returns zero. Requests exceeding the available buffer panic rather than silently shortening the request. `fwrite_items` includes stored NULs and hidden bytes in its requested range.
 
 The `c_abi` module supplies shared `extern "C"` entry points for fixed-signature stdio functions. Translated direct calls use ordinary APIs when their arguments match, including borrowed C-string views for literals and guided storage. Raw C strings and `void *` buffers can use the shared argument adapters. C function references use `c_abi` so their calling convention matches the translated function-pointer type; Tenjin does not emit a local forwarding function for every stdio declaration. `fgetpos` and `fsetpos` accept a pointer type parameter for translated `fpos_t` records, under the ordinary layout and storage safety requirements. The wrappers use `u8` for C character storage and `FILE_ptr` for stream handles, and do not export libc symbol names. Variadic formatted I/O remains on the macros and plan APIs.
+
+`fopen_raw`, `fdopen_raw`, `freopen_raw`, `popen_raw`, and `fmemopen_raw` accept a Rust `&str` mode alongside the raw path, descriptor, command, or buffer. Modes need no stored NUL; they retain the ordinary API's first-NUL semantics. These are unsafe Rust functions sharing the ordinary implementations and safety contracts. Synsub uses them for direct calls with literal modes when other arguments still require raw access; borrowed paths and commands can use `fopen` and `popen` directly.
 
 The choice of `*const _File` is still compatible with the safety story (§7): although the handle is pointer-typed, it is not a real pointer into our data structures. The `_File` type is just an opaque placeholder, and the pointer bits are synthesized from slotmap keys rather than borrowed from a live `FILE` allocation. See §4.3.
 

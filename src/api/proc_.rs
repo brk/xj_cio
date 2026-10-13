@@ -76,6 +76,18 @@ pub fn popen<C: ByteView + ?Sized, M: ByteView + ?Sized>(command: &C, mode: &M) 
     slots::insert(Arc::new(FILE::new(state)))
 }
 
+/// Runs a raw C command with a Rust mode string, such as `"r"` or `"w"`.
+/// The mode does not need a terminating NUL.
+///
+/// # Safety
+///
+/// `command` must point to a readable NUL-terminated string that remains
+/// unchanged for the duration of the call.
+pub unsafe fn popen_raw(command: *const u8, mode: &str) -> FILE_ptr {
+    // SAFETY: the caller supplies a valid, unmodified C string.
+    popen(unsafe { core::ffi::CStr::from_ptr(command.cast()) }, mode)
+}
+
 pub fn pclose(t: FILE_ptr) -> core::ffi::c_int {
     let arc = match slots::remove(t) {
         Some(a) => a,

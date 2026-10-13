@@ -138,6 +138,21 @@ pub unsafe fn fmemopen<M: ByteView + ?Sized>(
     )
 }
 
+/// Opens a raw memory buffer with a Rust mode string. The mode does not
+/// need a terminating NUL. A null buffer allocates internal storage.
+///
+/// # Safety
+///
+/// A non-null `buf` must satisfy [`fmemopen`]'s storage and access contract:
+/// `size` initialized bytes must remain readable and writable until the
+/// stream finishes using them, and accesses must not conflict with stream
+/// operations. This lifetime can extend beyond `fclose` when closing is
+/// deferred by a stream guard. See [`fmemopen`] for the complete requirements.
+pub unsafe fn fmemopen_raw(buf: *mut libc::c_void, size: libc::size_t, mode: &str) -> FILE_ptr {
+    // SAFETY: the caller supplies fmemopen's raw storage requirements.
+    unsafe { fmemopen(buf, size, mode) }
+}
+
 /// `open_memstream(*bufp, *sizep)` is not implemented in v1; returns a
 /// null handle with `errno = ENOSYS`.
 pub fn open_memstream(_bufp: *mut *mut u8, _sizep: *mut libc::size_t) -> FILE_ptr {
