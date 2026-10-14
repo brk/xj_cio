@@ -27,8 +27,8 @@ slotmap = "1"
 parking_lot = "0.12"
 libc = "0.2"
 smallvec = "1"
-xj_cfmt = { path = "../../xj_cfmt" }
-xj_zstr = { path = "../../xj_zstr", features = ["cfmt"] }
+xj_cfmt = { version = "0.1.0", path = "../../xj_cfmt" }
+xj_zstr = { version = "0.1.0", path = "../../xj_zstr", features = ["cfmt"] }
 xj_scanf = { version = "0.3.0", path = "../../xj_scanf" }
 
 [dev-dependencies]

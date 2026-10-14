@@ -134,11 +134,17 @@ name = "xj_bytes"
 version = "0.1.0"
 
 [[package]]
+name = "xj_bytes"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eab63c6b6a9a3677d4ab91bd0ffd30b16911f7b7beeb36c960ab68a5d5ee5b1b"
+
+[[package]]
 name = "xj_cfmt"
 version = "0.1.0"
 dependencies = [
  "libc",
- "xj_bytes",
+ "xj_bytes 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "xj_cfmt_core",
  "xj_cfmt_macros",
 ]
@@ -147,7 +153,7 @@ dependencies = [
 name = "xj_cfmt_core"
 version = "0.1.0"
 dependencies = [
- "xj_bytes",
+ "xj_bytes 0.1.0",
 ]
 
 [[package]]
@@ -168,7 +174,7 @@ dependencies = [
  "parking_lot",
  "slotmap",
  "smallvec",
- "xj_bytes",
+ "xj_bytes 0.1.0",
  "xj_cfmt",
  "xj_scanf",
  "xj_zstr",
@@ -178,7 +184,7 @@ dependencies = [
 name = "xj_scanf"
 version = "0.3.0"
 dependencies = [
- "xj_bytes",
+ "xj_bytes 0.1.0",
  "xj_scanf_core",
 ]
 
@@ -186,13 +192,13 @@ dependencies = [
 name = "xj_scanf_core"
 version = "0.1.0"
 dependencies = [
- "xj_bytes",
+ "xj_bytes 0.1.0",
 ]
 
 [[package]]
 name = "xj_zstr"
 version = "0.1.0"
 dependencies = [
- "xj_bytes",
+ "xj_bytes 0.1.0",
  "xj_cfmt",
 ]
