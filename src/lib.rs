@@ -85,15 +85,15 @@ pub type fpos_t = libc::off_t;
 pub type fpos_t = libc::fpos_t;
 
 /// Default buffer size, exposed for callers translating `BUFSIZ`.
-pub const BUFSIZ: usize = 8192;
+pub const BUFSIZ: usize = libc::BUFSIZ as usize;
 
 /// `EOF` constant exported in libc terms. Returned by char-I/O calls.
 pub const EOF: libc::c_int = -1;
 
 /// `setvbuf` mode constants (libc-compatible).
-pub const _IOFBF: libc::c_int = 0;
-pub const _IOLBF: libc::c_int = 1;
-pub const _IONBF: libc::c_int = 2;
+pub const _IOFBF: libc::c_int = libc::_IOFBF;
+pub const _IOLBF: libc::c_int = libc::_IOLBF;
+pub const _IONBF: libc::c_int = libc::_IONBF;
 
 /// Maximum length of `tmpnam`-generated path string.
 pub const L_tmpnam: usize = 20;
