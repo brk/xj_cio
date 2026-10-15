@@ -42,8 +42,13 @@ fn seek_internal(
     // read-ahead buffer).
     let sf = match sf {
         SeekFrom::Current(o) if s.last_op == Direction::Read => {
-            let backup = (s.buffer.fill - s.buffer.cursor) + s.pushback.len();
-            SeekFrom::Current(o - backup as i64)
+            let backup = s
+                .buffer
+                .read_remaining()
+                .checked_add(s.pushback.len())
+                .and_then(|n| i64::try_from(n).ok())
+                .ok_or(libc::EOVERFLOW)?;
+            SeekFrom::Current(o.checked_sub(backup).ok_or(libc::EOVERFLOW)?)
         }
         other => other,
     };
@@ -56,7 +61,7 @@ fn seek_internal(
 }
 
 pub fn fseek(t: FILE_ptr, offset: libc::c_long, whence: libc::c_int) -> core::ffi::c_int {
-    let r = ops::with_token(t, |s| seek_internal(s, offset as i64, whence));
+    let r = ops::with_token(t, |s| seek_internal(s, i64::from(offset), whence));
     match r {
         Some(Ok(_)) => 0,
         Some(Err(e)) => {
@@ -68,7 +73,7 @@ pub fn fseek(t: FILE_ptr, offset: libc::c_long, whence: libc::c_int) -> core::ff
 }
 
 pub fn fseeko(t: FILE_ptr, offset: libc::off_t, whence: libc::c_int) -> core::ffi::c_int {
-    let r = ops::with_token(t, |s| seek_internal(s, offset as i64, whence));
+    let r = ops::with_token(t, |s| seek_internal(s, i64::from(offset), whence));
     match r {
         Some(Ok(_)) => 0,
         Some(Err(e)) => {
@@ -79,38 +84,50 @@ pub fn fseeko(t: FILE_ptr, offset: libc::off_t, whence: libc::c_int) -> core::ff
     }
 }
 
-pub fn ftell(t: FILE_ptr) -> libc::c_long {
-    ftello(t) as libc::c_long
-}
-
-pub fn ftello(t: FILE_ptr) -> libc::off_t {
-    let r = ops::with_token(t, |s| -> Result<i64, libc::c_int> {
+fn tell<T: TryFrom<i64>>(t: FILE_ptr) -> Result<T, libc::c_int> {
+    ops::with_token(t, |s| {
         let cur = s
             .handle
             .seek(SeekFrom::Current(0))
             .map_err(|e| errno::from_io(&e))?;
-        let mut pos = cur as i64;
+        let mut pos = i64::try_from(cur).map_err(|_| libc::EOVERFLOW)?;
         match s.last_op {
             Direction::Read => {
-                let buffered = (s.buffer.fill - s.buffer.cursor) as i64;
-                pos -= buffered;
-                pos -= s.pushback.len() as i64;
+                let buffered =
+                    i64::try_from(s.buffer.read_remaining()).map_err(|_| libc::EOVERFLOW)?;
+                let pushback = i64::try_from(s.pushback.len()).map_err(|_| libc::EOVERFLOW)?;
+                pos = pos
+                    .checked_sub(buffered)
+                    .and_then(|p| p.checked_sub(pushback))
+                    .ok_or(libc::EOVERFLOW)?;
             }
             Direction::Write => {
-                pos += s.buffer.fill as i64;
+                let buffered = i64::try_from(s.buffer.fill).map_err(|_| libc::EOVERFLOW)?;
+                pos = pos.checked_add(buffered).ok_or(libc::EOVERFLOW)?;
             }
             Direction::Either => {}
         }
-        Ok(pos)
-    });
-    match r {
-        Some(Ok(p)) => p as libc::off_t,
-        Some(Err(e)) => {
-            errno::set(e);
-            -1
-        }
-        None => -1,
-    }
+        T::try_from(pos).map_err(|_| libc::EOVERFLOW)
+    })
+    .unwrap_or(Err(libc::EBADF))
+}
+
+/// Returns the logical position, or fails with `EOVERFLOW` if it does
+/// not fit in the native `long` type.
+pub fn ftell(t: FILE_ptr) -> libc::c_long {
+    tell(t).unwrap_or_else(|e| {
+        errno::set(e);
+        -1
+    })
+}
+
+/// Returns the logical position, or fails with `EOVERFLOW` if it does
+/// not fit in the native `off_t` type.
+pub fn ftello(t: FILE_ptr) -> libc::off_t {
+    tell(t).unwrap_or_else(|e| {
+        errno::set(e);
+        -1
+    })
 }
 
 pub fn rewind(t: FILE_ptr) {
@@ -146,7 +163,7 @@ pub unsafe fn fgetpos_raw(t: FILE_ptr, pos: *mut fpos_t) -> core::ffi::c_int {
     unsafe {
         // Store our byte offset in the first eight bytes of the
         // native storage, whether it is a scalar or a struct.
-        std::ptr::write_unaligned(pos as *mut i64, off as i64);
+        std::ptr::write_unaligned(pos as *mut i64, i64::from(off));
     }
     0
 }
@@ -166,5 +183,37 @@ pub unsafe fn fsetpos_raw(t: FILE_ptr, pos: *const fpos_t) -> core::ffi::c_int {
     // `i64` is readable and initialized; `read_unaligned` needs no
     // alignment.
     let off: i64 = unsafe { std::ptr::read_unaligned(pos as *const i64) };
-    fseeko(t, off as libc::off_t, libc::SEEK_SET)
+    let off = match libc::off_t::try_from(off) {
+        Ok(off) => off,
+        Err(_) => {
+            errno::set(libc::EOVERFLOW);
+            return -1;
+        }
+    };
+    fseeko(t, off, libc::SEEK_SET)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Seek;
+
+    #[test]
+    fn tell_rejects_offsets_that_do_not_fit() {
+        let stream = crate::tmpfile();
+        assert!(!stream.is_null());
+        let boundary = i64::from(i32::MAX);
+        {
+            let mut guard = crate::stream_lock(stream).unwrap();
+            guard.seek(SeekFrom::Start(boundary as u64)).unwrap();
+        }
+        assert_eq!(tell::<i32>(stream), Ok(i32::MAX));
+        {
+            let mut guard = crate::stream_lock(stream).unwrap();
+            guard.seek(SeekFrom::Current(1)).unwrap();
+        }
+        assert_eq!(tell::<i32>(stream), Err(libc::EOVERFLOW));
+        assert_eq!(tell::<i64>(stream), Ok(boundary + 1));
+        assert_eq!(crate::fclose(stream), 0);
+    }
 }
