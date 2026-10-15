@@ -3,9 +3,9 @@
 
 use std::io::SeekFrom;
 
-use crate::FILE_ptr;
 use crate::errno;
 use crate::state::Direction;
+use crate::{FILE_ptr, fpos_t};
 
 use super::ops;
 
@@ -121,16 +121,16 @@ pub fn rewind(t: FILE_ptr) {
 }
 
 /// `fgetpos_raw`/`fsetpos_raw` stash the position inside the user's `fpos_t`.
-/// We store an `i64` byte offset (libc's `fpos_t` is opaque so callers
-/// can't tell the difference).
-const _: () = assert!(size_of::<libc::fpos_t>() >= size_of::<i64>());
+/// Positions saved by this crate contain an `i64` byte offset in
+/// their first eight bytes and must be restored through this crate.
+const _: () = assert!(size_of::<fpos_t>() >= size_of::<i64>());
 
 /// # Safety
 ///
 /// `pos` must be null (which fails with `EINVAL`) or valid for writes
-/// of a `libc::fpos_t`, and not accessed through any other pointer or
+/// of a [`crate::fpos_t`], and not accessed through any other pointer or
 /// reference during the call. No alignment is required.
-pub unsafe fn fgetpos_raw(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_int {
+pub unsafe fn fgetpos_raw(t: FILE_ptr, pos: *mut fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;
@@ -144,9 +144,8 @@ pub unsafe fn fgetpos_raw(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_i
     // above shows covers an `i64`. `write_unaligned` needs no
     // alignment.
     unsafe {
-        // libc::fpos_t on linux is a struct; we write an i64 into its
-        // first 8 bytes. This works because translated programs treat
-        // fpos_t opaquely.
+        // Store our byte offset in the first eight bytes of the
+        // native storage, whether it is a scalar or a struct.
         std::ptr::write_unaligned(pos as *mut i64, off as i64);
     }
     0
@@ -155,10 +154,10 @@ pub unsafe fn fgetpos_raw(t: FILE_ptr, pos: *mut libc::fpos_t) -> core::ffi::c_i
 /// # Safety
 ///
 /// `pos` must be null (which fails with `EINVAL`) or valid for reads of
-/// a `libc::fpos_t` whose first `size_of::<i64>()` bytes are
+/// a [`crate::fpos_t`] whose first `size_of::<i64>()` bytes are
 /// initialized (e.g. one filled in by [`fgetpos_raw`]), and not written
 /// through any other pointer during the call. No alignment is required.
-pub unsafe fn fsetpos_raw(t: FILE_ptr, pos: *const libc::fpos_t) -> core::ffi::c_int {
+pub unsafe fn fsetpos_raw(t: FILE_ptr, pos: *const fpos_t) -> core::ffi::c_int {
     if pos.is_null() {
         errno::set(libc::EINVAL);
         return -1;

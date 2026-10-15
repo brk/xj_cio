@@ -149,7 +149,7 @@ pub unsafe extern "C" fn fwrite(
 ///
 /// # Safety
 ///
-/// `pos` must point to storage with `libc::fpos_t`'s layout, size, and alignment,
+/// `pos` must point to storage with [`crate::fpos_t`]'s layout, size, and alignment,
 /// and satisfy [`crate::fgetpos_raw`]'s write and aliasing requirements.
 #[inline]
 pub unsafe extern "C" fn fgetpos<T>(stream: FILE_ptr, pos: *mut T) -> c_int {
@@ -162,7 +162,7 @@ pub unsafe extern "C" fn fgetpos<T>(stream: FILE_ptr, pos: *mut T) -> c_int {
 ///
 /// # Safety
 ///
-/// `pos` must point to a value with `libc::fpos_t`'s layout, size, and alignment,
+/// `pos` must point to a value with [`crate::fpos_t`]'s layout, size, and alignment,
 /// and satisfy [`crate::fsetpos_raw`]'s read and aliasing requirements.
 #[inline]
 pub unsafe extern "C" fn fsetpos<T>(stream: FILE_ptr, pos: *const T) -> c_int {

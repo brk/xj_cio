@@ -434,7 +434,7 @@ Every `unsafe fn` has a `# Safety` section stating its preconditions, and every 
      - **`fgets_raw`** shares its read loop with safe `fgets` and writes each byte, and the NUL, through the raw pointer.
      - **`tmpnam_raw` and `ctermid_raw`** generate the name in a local array and copy out only the name and its NUL.
      - **`snprintf_raw!` and `sprintf_raw!`** copy output bytes and their terminator directly through the raw pointer without constructing a destination slice.
-   - **Sources must be initialized.** `fwrite_raw` and `fsetpos_raw` read the caller's bytes. `fsetpos_raw` expects an `fpos_t` filled in by `fgetpos_raw`, which stores the offset in its first 8 bytes. A compile-time assertion checks that `fpos_t` is at least that large.
+   - **Sources must be initialized.** `fwrite_raw` and `fsetpos_raw` read the caller's bytes. `fsetpos_raw` expects an `xj_cio::fpos_t` filled in by `fgetpos_raw`, which stores the offset in its first 8 bytes. A compile-time assertion checks that `fpos_t` is at least that large. The type aliases `libc::off_t` on macOS, where `libc::fpos_t` is only an opaque placeholder, and `libc::fpos_t` elsewhere.
 3. **C-string pointers.** `perror_raw` and `freopen_raw` accept a null pointer or a valid NUL-terminated string.
 4. **`getline_raw` / `getdelim_raw`.** `lineptr` and `n` must be valid for reads and writes. `*lineptr` must be null or a live `malloc`-family allocation of at least `*n` bytes. As POSIX specifies, `*n` is ignored when `*lineptr` is null.
 5. **Static result buffers.** `tmpnam_raw(NULL)` and `ctermid_raw(NULL)` write a shared static buffer, as in C. Concurrent calls, or overlapping use of a previously returned pointer, are a data race. That is the caller's contract.

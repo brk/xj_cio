@@ -74,6 +74,16 @@ pub enum _File {}
 /// generation).
 pub type FILE_ptr = *const _File;
 
+/// Native storage for positions saved by [`fgetpos_raw`].
+///
+/// macOS defines `fpos_t` as `off_t`; `libc` exposes only an opaque
+/// placeholder for it, so use the concrete native type there.
+#[cfg(target_os = "macos")]
+pub type fpos_t = libc::off_t;
+/// Native storage for positions saved by [`fgetpos_raw`].
+#[cfg(not(target_os = "macos"))]
+pub type fpos_t = libc::fpos_t;
+
 /// Default buffer size, exposed for callers translating `BUFSIZ`.
 pub const BUFSIZ: usize = 8192;
 

@@ -145,6 +145,25 @@ fn fseek_ftell_roundtrip() {
 }
 
 #[test]
+fn fgetpos_fsetpos_roundtrip() {
+    let fp = tmpfile();
+    assert!(!fp.is_null());
+    // Exercise offsets beyond 32 bits when the native offset type permits it.
+    // Seeking without writing does not allocate a large file.
+    let offset = libc::off_t::try_from(1u64 << 33).unwrap_or(libc::off_t::MAX);
+    assert_eq!(fseeko(fp, offset, libc::SEEK_SET), 0);
+
+    let mut pos = std::mem::MaybeUninit::<fpos_t>::uninit();
+    // SAFETY: `pos` provides native position storage, exclusively borrowed here.
+    assert_eq!(unsafe { fgetpos_raw(fp, pos.as_mut_ptr()) }, 0);
+    assert_eq!(fseeko(fp, 0, libc::SEEK_SET), 0);
+    // SAFETY: fgetpos_raw initialized the saved offset in `pos`.
+    assert_eq!(unsafe { c_abi::fsetpos(fp, pos.as_ptr()) }, 0);
+    assert_eq!(ftello(fp), offset);
+    assert_eq!(fclose(fp), 0);
+}
+
+#[test]
 fn fmemopen_write_roundtrip() {
     let mut buf = [b'#'; 16];
     // SAFETY: `buf` outlives the stream (closed below) and is untouched until then.
