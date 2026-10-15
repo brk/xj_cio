@@ -15,6 +15,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "errno"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -130,21 +140,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
-name = "xj_bytes"
-version = "0.1.0"
+name = "windows-sys"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+dependencies = [
+ "windows-link",
+]
 
 [[package]]
 name = "xj_bytes"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eab63c6b6a9a3677d4ab91bd0ffd30b16911f7b7beeb36c960ab68a5d5ee5b1b"
 
 [[package]]
 name = "xj_cfmt"
 version = "0.1.0"
 dependencies = [
  "libc",
- "xj_bytes 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xj_bytes",
  "xj_cfmt_core",
  "xj_cfmt_macros",
 ]
@@ -153,7 +166,7 @@ dependencies = [
 name = "xj_cfmt_core"
 version = "0.1.0"
 dependencies = [
- "xj_bytes 0.1.0",
+ "xj_bytes",
 ]
 
 [[package]]
@@ -170,11 +183,12 @@ dependencies = [
 name = "xj_cio"
 version = "0.1.0"
 dependencies = [
+ "errno",
  "libc",
  "parking_lot",
  "slotmap",
  "smallvec",
- "xj_bytes 0.1.0",
+ "xj_bytes",
  "xj_cfmt",
  "xj_scanf",
  "xj_zstr",
@@ -184,7 +198,7 @@ dependencies = [
 name = "xj_scanf"
 version = "0.3.0"
 dependencies = [
- "xj_bytes 0.1.0",
+ "xj_bytes",
  "xj_scanf_core",
 ]
 
@@ -192,13 +206,13 @@ dependencies = [
 name = "xj_scanf_core"
 version = "0.1.0"
 dependencies = [
- "xj_bytes 0.1.0",
+ "xj_bytes",
 ]
 
 [[package]]
 name = "xj_zstr"
 version = "0.1.0"
 dependencies = [
- "xj_bytes 0.1.0",
+ "xj_bytes",
  "xj_cfmt",
 ]

@@ -5,19 +5,14 @@ use std::io;
 
 /// Read the most recent errno value set on this thread.
 pub fn get() -> core::ffi::c_int {
-    unsafe { *libc::__errno_location() }
+    ::errno::errno().0
 }
 
 /// Set the errno value for this thread.
 ///
 /// Translated C code and Rust adapters observe the same value.
 pub fn set(e: libc::c_int) {
-    // SAFETY: `__errno_location` always returns a valid, aligned
-    // pointer to the calling thread's `errno`, which only this thread
-    // accesses.
-    unsafe {
-        *libc::__errno_location() = e;
-    }
+    ::errno::set_errno(::errno::Errno(e));
 }
 
 /// Translate a `std::io::Error` into a POSIX errno integer.

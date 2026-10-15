@@ -22,6 +22,7 @@ set_output_capture = []
 c_variadic = []
 
 [dependencies]
+errno = "0.3"
 xj_bytes = { version = "0.1.0", path = "../../xj_bytes", features = ["std"] }
 slotmap = "1"
 parking_lot = "0.12"
